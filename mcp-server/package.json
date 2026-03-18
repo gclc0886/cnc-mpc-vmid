@@ -1,0 +1,18 @@
+{
+  "name": "cnc-trainer-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for CNC Trainer — Claude Code integration",
+  "type": "module",
+  "main": "cnc-trainer-mcp.ts",
+  "scripts": {
+    "start": "npx tsx cnc-trainer-mcp.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.0"
+  }
+}
