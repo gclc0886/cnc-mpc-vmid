@@ -41,6 +41,7 @@ export const PRESET_3X: KinematicConfig = {
     id: 1, name: 'Spindle_Table', turretId: 1, tableId: 2,
     axesOrder: { linear: [1, 2, 3], rotary: [] },
   }],
+  channels: [], accessPatterns: [],
   postprocessor: 'sample_3x',
 }
 
@@ -92,6 +93,7 @@ export const PRESET_4X: KinematicConfig = {
     id: 1, name: 'Spindle_Table', turretId: 1, tableId: 2,
     axesOrder: { linear: [1, 2, 3], rotary: [4] },
   }],
+  channels: [], accessPatterns: [],
   postprocessor: 'sample_4x',
 }
 
@@ -150,6 +152,7 @@ export const PRESET_5X_TRUNNION: KinematicConfig = {
     id: 1, name: 'Spindle_Table', turretId: 1, tableId: 2,
     axesOrder: { linear: [1, 2, 3], rotary: [4, 5] },
   }],
+  channels: [], accessPatterns: [],
   postprocessor: 'sample_5x_ac',
 }
 
@@ -215,6 +218,7 @@ export const PRESET_5X_HEADHEAD: KinematicConfig = {
     id: 1, name: 'Spindle_Table', turretId: 1, tableId: 2,
     axesOrder: { linear: [1, 2, 3], rotary: [4, 5] },
   }],
+  channels: [], accessPatterns: [],
   postprocessor: 'sample_5x_bc',
 }
 
@@ -268,6 +272,7 @@ export const PRESET_TURNMILL: KinematicConfig = {
     id: 1, name: 'Turret_Spindle', turretId: 1, tableId: 2,
     axesOrder: { linear: [1, 2, 3], rotary: [4] },
   }],
+  channels: [], accessPatterns: [],
   postprocessor: 'sample_turnmill',
 }
 

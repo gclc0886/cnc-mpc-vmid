@@ -263,6 +263,22 @@ html, body, #root {
   z-index: 1;
 }
 
+.gcode-textarea-simple {
+  flex: 1;
+  width: 100%;
+  background: #1a1a1a;
+  color: #e0e0e0;
+  font-family: 'Consolas', monospace;
+  font-size: 12px;
+  line-height: 18px;
+  padding: 4px 8px;
+  border: none;
+  resize: none;
+  outline: none;
+  overflow: auto;
+  white-space: pre;
+}
+
 .machine-info {
   font-size: 11px;
   margin-bottom: 12px;
@@ -528,6 +544,25 @@ html, body, #root {
 
 .playback-main-btn:hover {
   background: #2a4a3e !important;
+}
+
+.playback-combination {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  font-size: 10px;
+  color: #aaa;
+}
+.playback-combination select {
+  flex: 1;
+  padding: 2px 4px;
+  background: #1a2a3e;
+  color: #e0e0e0;
+  border: 1px solid #333;
+  border-radius: 3px;
+  font-size: 10px;
+  font-family: inherit;
 }
 
 .playback-speed {

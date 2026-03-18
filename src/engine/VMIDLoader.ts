@@ -1,4 +1,4 @@
-import type { KinematicConfig, AxisDef } from './KinematicChain'
+import type { KinematicConfig, AxisDef, DeviceDef, ChannelDef, AccessPatternDef } from './KinematicChain'
 
 /**
  * Parse VMID XML string into KinematicConfig.
@@ -24,6 +24,8 @@ export function parseVMID(xmlString: string): KinematicConfig {
     rotaryAxes: [],
     devices: [],
     combinations: [],
+    channels: [],
+    accessPatterns: [],
     postprocessor: '',
   }
 
@@ -93,7 +95,59 @@ export function parseVMID(xmlString: string): KinematicConfig {
     })
   })
 
+  // Channels
+  parseChannels(root, config)
+
+  // Access Patterns
+  parseAccessPatterns(root, config)
+
   return config
+}
+
+function parseChannels(root: Element, config: KinematicConfig) {
+  const channelsElem = root.querySelector('Channels')
+  if (!channelsElem) return
+
+  for (const ch of Array.from(channelsElem.querySelectorAll(':scope > Channel'))) {
+    const submachineIds: number[] = []
+    const smIds = ch.querySelector('SubmachinesIds')
+    if (smIds) {
+      for (const attr of Array.from(smIds.attributes)) {
+        if (attr.name.startsWith('Id')) {
+          const v = parseInt(attr.value)
+          if (v >= 0) submachineIds.push(v)
+        }
+      }
+    }
+
+    config.channels.push({
+      id: parseInt(ch.getAttribute('ID') || '0'),
+      name: ch.getAttribute('Name') || '',
+      submachineIds,
+      numLinearAxes: parseInt(ch.getAttribute('NumLinearAxes') || '0'),
+      numRotaryAxes: parseInt(ch.getAttribute('NumRotaryAxes') || '0'),
+    })
+  }
+}
+
+function parseAccessPatterns(root: Element, config: KinematicConfig) {
+  const apElem = root.querySelector('AccessPatterns')
+  if (!apElem) return
+
+  for (const ap of Array.from(apElem.querySelectorAll(':scope > AccessPattern'))) {
+    const permissions: Record<number, string> = {}
+    for (const axis of Array.from(ap.querySelectorAll('Axis'))) {
+      const axId = parseInt(axis.getAttribute('Id') || axis.getAttribute('ID') || '0')
+      const mode = axis.getAttribute('Mode') || 'normal'
+      permissions[axId] = mode
+    }
+
+    config.accessPatterns.push({
+      id: parseInt(ap.getAttribute('ID') || '0'),
+      name: ap.getAttribute('Name') || '',
+      axisPermissions: permissions,
+    })
+  }
 }
 
 function parseV30Devices(root: Element, config: KinematicConfig) {
@@ -211,13 +265,15 @@ function parseV24Devices(root: Element, config: KinematicConfig) {
       }
     }
 
-    config.devices.push({
+    const dev = {
       id: parseInt(sd.getAttribute('ID') || '0'),
       name: sd.getAttribute('Name') || '',
       type: devType === 2 ? 'spindle' : 'table',
       maxSpin: parseFloat(sd.getAttribute('MaxSpin') || '0'),
       axes,
-    })
+      coordSys: parseCoordSys(sd),
+    }
+    config.devices.push(dev)
   }
 }
 
@@ -334,6 +390,34 @@ export function exportVMID(config: KinematicConfig): string {
     xml += '</Combinations>'
   }
 
+  // Channels
+  if (config.channels.length > 0) {
+    xml += '<Channels>'
+    for (const ch of config.channels) {
+      xml += `<Channel ID="${ch.id}" Name="${esc(ch.name)}" NumLinearAxes="${ch.numLinearAxes}" NumRotaryAxes="${ch.numRotaryAxes}">`
+      if (ch.submachineIds.length > 0) {
+        xml += '<SubmachinesIds'
+        ch.submachineIds.forEach((id, i) => { xml += ` Id${i}="${id}"` })
+        xml += '/>'
+      }
+      xml += '</Channel>'
+    }
+    xml += '</Channels>'
+  }
+
+  // Access Patterns
+  if (config.accessPatterns.length > 0) {
+    xml += '<AccessPatterns>'
+    for (const ap of config.accessPatterns) {
+      xml += `<AccessPattern ID="${ap.id}" Name="${esc(ap.name)}">`
+      for (const [axId, mode] of Object.entries(ap.axisPermissions)) {
+        xml += `<Axis Id="${axId}" Mode="${mode}"/>`
+      }
+      xml += '</AccessPattern>'
+    }
+    xml += '</AccessPatterns>'
+  }
+
   xml += '</Machine>\n'
   return xml
 }
@@ -377,6 +461,37 @@ function axisToXml(axis: AxisDef, dev: { type: string; id: number; name: string;
 
   xml += '</Axis>'
   return xml
+}
+
+function parseCoordSys(elem: Element): DeviceDef['coordSys'] {
+  const vx = elem.querySelector(':scope > CoordSysVecX')
+  const vy = elem.querySelector(':scope > CoordSysVecY')
+  const vz = elem.querySelector(':scope > CoordSysVecZ')
+  const pl = elem.querySelector(':scope > CoordSysPlace')
+  if (!vx && !vy && !vz && !pl) return undefined
+
+  return {
+    vecX: {
+      x: parseFloat(vx?.getAttribute('x') || '1'),
+      y: parseFloat(vx?.getAttribute('y') || '0'),
+      z: parseFloat(vx?.getAttribute('z') || '0'),
+    },
+    vecY: {
+      x: parseFloat(vy?.getAttribute('x') || '0'),
+      y: parseFloat(vy?.getAttribute('y') || '1'),
+      z: parseFloat(vy?.getAttribute('z') || '0'),
+    },
+    vecZ: {
+      x: parseFloat(vz?.getAttribute('x') || '0'),
+      y: parseFloat(vz?.getAttribute('y') || '0'),
+      z: parseFloat(vz?.getAttribute('z') || '1'),
+    },
+    place: {
+      x: parseFloat(pl?.getAttribute('x') || '0'),
+      y: parseFloat(pl?.getAttribute('y') || '0'),
+      z: parseFloat(pl?.getAttribute('z') || '0'),
+    },
+  }
 }
 
 function flattenAxes(axes: AxisDef[]): AxisDef[] {

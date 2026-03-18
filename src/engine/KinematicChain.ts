@@ -37,6 +37,32 @@ export interface DeviceDef {
   }
 }
 
+/** Combination of turret + table with axis mapping. */
+export interface CombinationDef {
+  id: number
+  name: string
+  turretId: number
+  tableId: number
+  axesOrder: { linear: number[]; rotary: number[] }
+}
+
+/** Channel definition — independent axis group. */
+export interface ChannelDef {
+  id: number
+  name: string
+  submachineIds: number[]   // References to Combination IDs
+  numLinearAxes: number
+  numRotaryAxes: number
+}
+
+/** Access pattern — axis exchange mode between channels. */
+export interface AccessPatternDef {
+  id: number
+  name: string
+  /** Per-axis permission: axis ID → 'normal' | 'forbidden' | 'exchange' */
+  axisPermissions: Record<number, string>
+}
+
 /** Full kinematic config from VMID JSON export. */
 export interface KinematicConfig {
   name: string
@@ -46,13 +72,9 @@ export interface KinematicConfig {
   linearAxes: string[]
   rotaryAxes: string[]
   devices: DeviceDef[]
-  combinations: {
-    id: number
-    name: string
-    turretId: number
-    tableId: number
-    axesOrder: { linear: number[]; rotary: number[] }
-  }[]
+  combinations: CombinationDef[]
+  channels: ChannelDef[]
+  accessPatterns: AccessPatternDef[]
   postprocessor: string
 }
 

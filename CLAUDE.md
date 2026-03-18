@@ -22,11 +22,107 @@ Claude Code  <-->  MCP Server (stdio, Node.js)
 
 - **MCP Server**: `mcp-server/cnc-trainer-mcp.ts` — 21 tools, WebSocket relay
 - **Bridge Client**: `src/api/BridgeClient.ts` — browser-side WS client, dispatches commands to Zustand store
-- **Store**: `src/store/useMachineStore.ts` — central state (config, chain, toolPath, playback)
-- **Engine**: `src/engine/KinematicChain.ts` — forward kinematics, matrix math
+- **Store**: `src/store/useMachineStore.ts` — central state (config, chain, toolPath, playback, activeCombination)
+- **Engine**: `src/engine/KinematicChain.ts` — forward kinematics, matrix math, types for Combinations/Channels/AccessPatterns
 - **Parser**: `src/engine/GCodeParser.ts` — G0/G1/G2/G3, IJK/R/CR= arcs
-- **VMID**: `src/engine/VMIDLoader.ts` — import/export SolidCAM VMID format (Ver 24-58)
+- **VMID**: `src/engine/VMIDLoader.ts` — import/export SolidCAM VMID format (Ver 24-58), parses sub-machines, channels, access patterns
 - **3D**: `src/visualization/MachineModel.tsx` — recursive node tree, spindle+tool, protractor discs
+
+## Data Model
+
+### KinematicConfig (full machine description)
+
+```typescript
+interface KinematicConfig {
+  name: string
+  type: string                    // 'milling' | 'turn_mill'
+  kinematic: string               // 'No-Rotary' | 'Table-Table' | 'Head-Head' | 'Turn-Mill'
+  axisCount: number
+  linearAxes: string[]            // ['X', 'Y', 'Z']
+  rotaryAxes: string[]            // ['A', 'C']
+  devices: DeviceDef[]            // spindle + table device trees
+  combinations: CombinationDef[]  // sub-machine axis mappings
+  channels: ChannelDef[]          // independent axis groups
+  accessPatterns: AccessPatternDef[] // axis exchange modes (G140/G142)
+  postprocessor: string
+}
+```
+
+### Combinations (Sub-machines)
+
+A **Combination** defines a pairing of turret (tool) + table (workpiece) with an **axis order** that maps G-code coordinates to physical axes:
+
+```typescript
+interface CombinationDef {
+  id: number
+  name: string          // e.g. 'Spindle_Table', 'Turret1_SubSpindle'
+  turretId: number      // device ID of tool chain
+  tableId: number       // device ID of workpiece chain
+  axesOrder: {
+    linear: number[]    // [axisId_for_X, axisId_for_Y, axisId_for_Z]
+    rotary: number[]    // [axisId_for_A, axisId_for_B, axisId_for_C]
+  }
+}
+```
+
+**Axis mapping during G-code simulation:**
+- `axesOrder.linear[0]` → G-code X, `linear[1]` → Y, `linear[2]` → Z
+- `axesOrder.rotary[0]` → G-code A, `rotary[1]` → B, `rotary[2]` → C
+- Axis IDs are resolved to axis names via `buildAxisIdMap()` in the store
+
+### Channels
+
+A **Channel** is an independent axis group with its own sub-machines:
+
+```typescript
+interface ChannelDef {
+  id: number
+  name: string
+  submachineIds: number[]   // references to Combination IDs
+  numLinearAxes: number
+  numRotaryAxes: number
+}
+```
+
+### Access Patterns (Axis Exchange)
+
+Defines which axes can be shared/exchanged between channels (Swiss-type G140/G142):
+
+```typescript
+interface AccessPatternDef {
+  id: number
+  name: string
+  axisPermissions: Record<number, string>  // axisId → 'normal'|'forbidden'|'exchange'
+}
+```
+
+## Sub-machine Selection (Axis Mapping)
+
+The store tracks `activeCombinationId` — which combination (sub-machine) is currently active for G-code simulation.
+
+**How it works:**
+1. When a machine loads (`loadConfig`), the first combination is auto-selected
+2. `applyStep(step)` reads the active combination's `axesOrder` to map G-code X/Y/Z/A/B/C → physical axis names
+3. If no combination exists or is selected, fallback to direct name mapping (X→X, Y→Y, etc.)
+4. UI shows a dropdown in PlaybackControls when there are 2+ combinations
+
+**For Mill-Turn machines with multiple sub-machines:**
+- Each sub-machine has different axis order (e.g., Turret1_MainSpindle vs Turret1_SubSpindle)
+- G-code X may map to different physical axes depending on which sub-machine is active
+- User selects the sub-machine before running simulation
+
+## VMID Import/Export
+
+The VMID loader (`VMIDLoader.ts`) handles SolidCAM Virtual Machine ID format:
+
+**Parsed elements:**
+- `<SubDevice>` → devices with coordinate systems (`coordSys: {vecX, vecY, vecZ, place}`)
+- `<Axis>` → axis tree with vector, center, offset, limits
+- `<Combination>` → sub-machine definitions with axis order
+- `<Channel>` → channel definitions with sub-machine assignments
+- `<AccessPattern>` → axis exchange permissions
+
+**Round-trip support:** Load VMID → modify in UI → export VMID preserves all data including channels, access patterns, and device coordinate systems.
 
 ## MCP Tools Reference
 
@@ -37,7 +133,7 @@ Claude Code  <-->  MCP Server (stdio, Node.js)
 | `get_axis_positions` | `{ "X": 50.0, "Y": 30.0, "Z": -10.0, "A": 45.0 }` |
 | `get_tool_position` | TCP in MCS and WCS coordinates |
 | `get_matrices` | All 4x4 transformation matrices (world + relative) |
-| `get_config` | Full KinematicConfig JSON |
+| `get_config` | Full KinematicConfig JSON (includes combinations, channels, accessPatterns) |
 | `get_animation_state` | currentStep, totalSteps, isPlaying |
 
 ### Machine control
@@ -110,6 +206,9 @@ add_device(device={name:"Spindle X", type:"spindle", axes:[{name:"W", type:"line
 - **Axis hierarchy**: nested parent→child, each device has its own root axes
 - **deviceId**: numeric ID from config (typically 1=Spindle, 2=Table, but check `get_config`)
 - **blockIndex in SimPoint**: maps to `parsedBlocks[blockIndex].line` for source G-code line number
+- **Combination axesOrder**: axis IDs (not names!) — resolved via `buildAxisIdMap()` in store
+- **Channels**: independent groups — each channel has its own sub-machines and axis budget
+- **Access patterns**: axis exchange modes — `normal` (own channel), `forbidden` (disabled), `exchange` (borrowed from other channel)
 
 ## Troubleshooting
 
@@ -118,6 +217,8 @@ add_device(device={name:"Spindle X", type:"spindle", axes:[{name:"W", type:"line
 - **App crashes on add_axis**: Check that `vector` uses `{x,y,z}` format, not array `[x,y,z]`
 - **Machine disappears after config edit**: Fixed — `loadConfig(config, true)` preserves state
 - **Protractor labels too small**: Font size in `createProtractorTexture()` in MachineModel.tsx
+- **G-code axes map wrong on Mill-Turn**: Check that the correct sub-machine (combination) is selected in the PlaybackControls dropdown
+- **VMID loses channels/access patterns**: Ensure `parseChannels()` and `parseAccessPatterns()` are called during import, and `exportVMID()` writes them back
 
 ## File Locations
 
@@ -129,3 +230,8 @@ add_device(device={name:"Spindle X", type:"spindle", axes:[{name:"W", type:"line
 | Sample VMID | `DMC635_SIN-4X.vmid` |
 | Electron entry | `electron/main.js` |
 | CSS styles | `src/index.css` |
+| Store (state) | `src/store/useMachineStore.ts` |
+| Kinematic types | `src/engine/KinematicChain.ts` |
+| VMID loader | `src/engine/VMIDLoader.ts` |
+| G-code parser | `src/engine/GCodeParser.ts` |
+| Playback UI | `src/components/PlaybackControls.tsx` |

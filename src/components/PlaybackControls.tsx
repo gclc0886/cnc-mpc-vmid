@@ -12,7 +12,9 @@ const SPEED_OPTIONS = [
 export function PlaybackControls() {
   const {
     toolPath, currentStep, isPlaying, playbackSpeed, config,
+    activeCombinationId,
     setIsPlaying, setPlaybackSpeed, applyStep, parseGcode,
+    setActiveCombination,
   } = useMachineStore()
 
   const animRef = useRef<number>(0)
@@ -106,6 +108,22 @@ export function PlaybackControls() {
           Parse G-Code
         </button>
       </div>
+
+      {/* Sub-machine (combination) selector */}
+      {config && config.combinations && config.combinations.length > 1 && (
+        <div className="playback-combination">
+          <span>Sub-machine:</span>
+          <select
+            value={activeCombinationId ?? ''}
+            onChange={(e) => setActiveCombination(e.target.value ? Number(e.target.value) : null)}
+            disabled={isPlaying}
+          >
+            {config.combinations.map(c => (
+              <option key={c.id} value={c.id}>{c.name}</option>
+            ))}
+          </select>
+        </div>
+      )}
 
       {totalSteps > 0 && (
         <>

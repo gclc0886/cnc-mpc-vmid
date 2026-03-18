@@ -21,6 +21,9 @@ interface MachineStore {
   isPlaying: boolean
   playbackSpeed: number  // steps per frame (1=slow, 2, 5, 10, 20=fast)
 
+  // Active combination (sub-machine) for axis mapping
+  activeCombinationId: number | null
+
   // Configurator
   selectedNode: string | null
 
@@ -39,6 +42,8 @@ interface MachineStore {
   setToolPath: (points: SimPoint[]) => void
   setPlaybackSpeed: (speed: number) => void
   applyStep: (step: number) => void  // apply toolPath[step] to chain axes
+
+  setActiveCombination: (id: number | null) => void
 
   // Configurator actions
   setSelectedNode: (name: string | null) => void
@@ -101,6 +106,7 @@ export const useMachineStore = create<MachineStore>((set, get) => ({
   playbackSpeed: 2,
 
   selectedNode: null,
+  activeCombinationId: null,
 
   loadPreset: (key) => {
     const config = PRESETS[key]
@@ -118,11 +124,14 @@ export const useMachineStore = create<MachineStore>((set, get) => ({
       }
     }
     chain.updateMatrices()
+    // Auto-select first combination if available
+    const firstCombId = config.combinations?.length > 0 ? config.combinations[0].id : null
     set({
       config,
       chain,
       machineName: config.name,
       machineInfo: buildInfoString(config),
+      activeCombinationId: firstCombId,
       ...(preserveState ? {} : { toolPath: [], currentStep: 0, isPlaying: false, selectedNode: null }),
       version: get().version + 1,
     })
@@ -162,18 +171,48 @@ export const useMachineStore = create<MachineStore>((set, get) => ({
   setPlaybackSpeed: (speed) => set({ playbackSpeed: speed }),
 
   applyStep: (step) => {
-    const { chain, toolPath } = get()
+    const { chain, toolPath, config, activeCombinationId } = get()
     if (!chain || step < 0 || step >= toolPath.length) return
     const pt = toolPath[step]
-    const axisMap: Record<string, number> = {
-      'X': pt.x, 'Y': pt.y, 'Z': pt.z,
-      'A': pt.a, 'B': pt.b, 'C': pt.c,
-    }
-    for (const [name] of chain.nodes) {
-      if (name in axisMap) chain.setAxisValue(name, axisMap[name])
+
+    // Build axis mapping from active combination's axesOrder
+    // axesOrder.linear = [axisId1, axisId2, axisId3] → maps to G-code X, Y, Z
+    // axesOrder.rotary = [axisId4, axisId5, axisId6] → maps to G-code A, B, C
+    const combination = config?.combinations?.find(c => c.id === activeCombinationId)
+
+    if (combination) {
+      // Build axis ID → name lookup from all devices
+      const idToName = buildAxisIdMap(config!)
+      const linIds = combination.axesOrder.linear  // [L1_id, L2_id, L3_id]
+      const rotIds = combination.axesOrder.rotary  // [R1_id, R2_id, R3_id]
+
+      // G-code X → first linear axis, Y → second, Z → third
+      const gcodeLinear = [pt.x, pt.y, pt.z]
+      for (let i = 0; i < linIds.length && i < 3; i++) {
+        const axisName = idToName.get(linIds[i])
+        if (axisName) chain.setAxisValue(axisName, gcodeLinear[i])
+      }
+
+      // G-code A → first rotary axis, B → second, C → third
+      const gcodeRotary = [pt.a, pt.b, pt.c]
+      for (let i = 0; i < rotIds.length && i < 3; i++) {
+        const axisName = idToName.get(rotIds[i])
+        if (axisName) chain.setAxisValue(axisName, gcodeRotary[i])
+      }
+    } else {
+      // Fallback: direct name mapping (legacy behavior)
+      const axisMap: Record<string, number> = {
+        'X': pt.x, 'Y': pt.y, 'Z': pt.z,
+        'A': pt.a, 'B': pt.b, 'C': pt.c,
+      }
+      for (const [name] of chain.nodes) {
+        if (name in axisMap) chain.setAxisValue(name, axisMap[name])
+      }
     }
     set({ currentStep: step, version: get().version + 1 })
   },
+
+  setActiveCombination: (id) => set({ activeCombinationId: id }),
 
   setSelectedNode: (name) => set({ selectedNode: name }),
 
@@ -338,6 +377,19 @@ function collectAxisNames(config: KinematicConfig): { linear: string[]; rotary: 
   }
   for (const dev of config.devices) collect(dev.axes)
   return { linear, rotary }
+}
+
+/** Build axis ID → axis name map from config devices. */
+function buildAxisIdMap(config: KinematicConfig): Map<number, string> {
+  const map = new Map<number, string>()
+  const collect = (axes: AxisDef[]) => {
+    for (const a of axes) {
+      map.set(a.id, a.name)
+      if (a.children) collect(a.children)
+    }
+  }
+  for (const dev of config.devices) collect(dev.axes)
+  return map
 }
 
 export { DEFAULT_GCODE }
