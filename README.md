@@ -4,7 +4,6 @@
 
 ![Electron + React + Three.js](https://img.shields.io/badge/stack-Electron%20%7C%20React%20%7C%20Three.js-blue)
 ![MCP](https://img.shields.io/badge/MCP-Model%20Context%20Protocol-green)
-![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
 ## Что это?
 
@@ -182,4 +181,4 @@ VMID (Virtual Machine ID) — формат описания станка SolidCA
 
 ## Лицензия
 
-MIT
+Не определена. Свяжитесь с автором для уточнения условий использования.
