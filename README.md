@@ -5,7 +5,7 @@
 ![Electron + React + Three.js](https://img.shields.io/badge/stack-Electron%20%7C%20React%20%7C%20Three.js-blue)
 ![MCP](https://img.shields.io/badge/MCP-Model%20Context%20Protocol-green)
 
-
+![Screenshot] (https://raw.githubusercontent.com/gclc0886/cnc-mpc-vmid/refs/heads/main/image.jpg)
 
 ## Что это?
 
