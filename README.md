@@ -1,9 +1,11 @@
 # CNC Kinematic Simulator / Trainer
 
 Визуально-математический симулятор кинематики многоосевых станков с ЧПУ с интеграцией MCP (Model Context Protocol) для управления через ИИ-агента.
-https://photos.app.goo.gl/eThnwsAYwC6pTzNPA
+
 ![Electron + React + Three.js](https://img.shields.io/badge/stack-Electron%20%7C%20React%20%7C%20Three.js-blue)
 ![MCP](https://img.shields.io/badge/MCP-Model%20Context%20Protocol-green)
+
+https://photos.app.goo.gl/eThnwsAYwC6pTzNPA
 
 ## Что это?
 
