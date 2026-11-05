@@ -592,8 +592,12 @@ endp
   ; This ensures tool starts at safe height (ztool) matching end position (N180)
   ; Bypasses @rapid_move to avoid unwanted yhpos/zhpos transformation
   {nb, 'G0 X'xtool, ' Y'ytool, ' Z'ztool}
-  {nb, 'G0 X'xnext, ' Y'ynext, ' Z'ztool}
-  
+  ; Y is not pre-positioned here: ynext is in the face CoordSys and would have
+  ; the wrong sign for indexing. The first move outputs the mapped Y instead;
+  ; force it, because the machine is now at ytool, not at the last tracked Y.
+  {nb, 'G0 X'xnext, ' Z'ztool}
+  change(y_calc) = true
+
   skipline = TRUE
   no_rapid_flag = true
 endp
@@ -829,7 +833,8 @@ endp
     y_calc = yhpos
     z_calc = zhpos
   else
-    y_calc = -ypos
-    z_calc = -zpos
+    ; 0 - v instead of -v: avoids printing "Y-0" when the value is zero
+    y_calc = 0 - ypos
+    z_calc = 0 - zpos
   endif
 endp
