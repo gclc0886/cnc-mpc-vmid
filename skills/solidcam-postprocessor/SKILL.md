@@ -182,7 +182,38 @@ Results: rotor (−Z side) `G0 A12` → `G0 X-6 Z90` → `G1 Z48.493` → `G1 X2
 
 **Caveat:** on a symmetric part (30 slots × 12°, 180° = 15 pitches) a wrong A mapping is invisible — every face still hits *some* slot. Test with both CS orientations and with an asymmetric feature against the SolidCAM simulation.
 
-**Tool change:** don't pre-position Y from `ynext` in `@change_tool` (face-CS value, wrong sign when flipped); output X/Z only and force Y on the first move with `change(y_calc) = true` — the machine sits at `ytool`, not at the last tracked Y.
+**Tool change:** don't pre-position Y from `ynext` in `@change_tool` (face-CS value, wrong sign when flipped); output X/Z only and force Y on the first move — the machine sits at `ytool`, not at the last tracked Y.
+`change(y_calc) = true` set in `@change_tool` does **not** survive: the next `y_calc = ...` assignment with an unchanged value resets the flag (seen: `G0 X25.924 Z50` without Y). Set a global flag instead and apply it after the assignment:
+```gppl
+; @change_tool
+  {nb, 'G0 X'xnext, ' Z'ztool}
+  force_y = true
+; end of @calc_clean_4axis, after y_calc/z_calc are assigned
+  if force_y then
+    change(y_calc) = true
+    force_y = false
+  endif
+```
+Verified on a rotor job where T2 starts at the same Y0 that T1 ended on: `G0 X10 Y0` is now output.
+
+#### Drilling in indexing (Sinumerik MCALL cycles)
+
+Which path SolidCAM takes depends on the VMID `<DrillCycle ... UseCycle>`: `UseCycle="0"` (G81 on DMC635) → plain G0/G1 through `@rapid_move`/`@line` (already mapped); `UseCycle="1"` (G82/83/84/86) → `@drill` + `@drill_point`.
+
+1. **`@drill_point` must always output X Y.** `MCALL CYCLExx(...)` runs only on following blocks *with motion*. `@drill` already positioned on the hole, so a change-only `{nb,['X'xpos],['Y'ypos],['Z'zpos]}` printed an empty block → cycle declared and cancelled, **no hole drilled**:
+   ```
+   G0 X25.924 Y0
+   MCALL CYCLE83(...)
+   N9580                 <- empty: nothing drilled
+   MCALL
+   ```
+   Fix: `call @calc_clean_4axis` then `{nb, 'X'xpos, ' Y'y_calc}` (no Z — the cycle handles Z).
+2. **Position before computing the cycle Z values.** On a new face the CoordSys side (`flip_yz`) is decided on the first move, so `call @rapid_move` must come first in `@drill`; then negate `rtp/rfp/dp` when `flip_yz`. Otherwise a flipped face gets negative values and trips the `RFP <= DP` FATAL check instead of drilling.
+3. **CYCLE83 parameter order (840D):** `CYCLE83(RTP, RFP, SDIS, DP, DPR, FDEP, FDPR, DAM, DTB, DTS, FRF, VARI)`. The old post wrote `(RTP, DP, RFP, FEED, , STEP, , STEP, , , 1, 1)`, which a standard 840D reads as RFP=DP, SDIS=RFP, DP=feed. Now:
+   ```gppl
+   {'(',rtp,',',rfp,',',sdis,',',dp,',,,',down_step,',',down_step,',,,1,1)'}
+   ```
+   → `MCALL CYCLE83(50,41.164,2,9,,,5,5,,,1,1)` (step → FDPR and DAM, FRF=1, VARI=1 chip removal). G81/82/84/86 in the same post already used the standard order — compare cycles within one post when one looks odd.
 
 See: `references/indexing-fixes.md`
 
@@ -415,6 +446,11 @@ Load the VMID in CNC-Trainer (MCP): put the tool at the top (`Z=50`), set `A`, r
 - [ ] Using `yhpos/zhpos` instead of `ypos/zpos`
 - [ ] Working Z negative on all faces → tool on the face CS −Z side; detect the side per face from `zpos` at the clearance move (never hardcode the flip — another job can be +Z)
 - [ ] Flipped face CS but G41/G42 and G2/G3 not swapped
+- [ ] `@arc`/`@drill_point` output raw `ypos/zpos` while `@line` outputs `y_calc/z_calc` (different sign and broken `change()` tracking)
+- [ ] Empty block after `MCALL CYCLExx` → holes not drilled; `@drill_point` must force X Y
+- [ ] Cycle Z values (RTP/RFP/DP) computed before the face side is known
+- [ ] CYCLE83 parameters not in 840D order
+- [ ] `change(var) = true` set before a later assignment of the same value (flag lost)
 - [ ] A sequence direction contradicts `Positive4xDirOnly` in VMID
 - [ ] No safe Z retract before A rotation
 - [ ] Outputting A in every block (should be only on face change)
