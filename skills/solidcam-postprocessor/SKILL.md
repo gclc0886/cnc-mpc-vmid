@@ -51,8 +51,8 @@ rot_axis_type:axis4_polar   → POLAR interpolation
 
 **For coordinate issues:**
 ```
-xpos, ypos, zpos     → WCS coordinates (part coordinate system)
-xhpos, yhpos, zhpos  → MCS coordinates (machine coordinate system)
+xpos, ypos, zpos     → Coordinates in the operation/face CoordSys (local)
+xhpos, yhpos, zhpos  → Coordinates in the main part CoordSys at A=0 (NOT machine axis values!)
 xmpos, ympos, zmpos  → Transformed coordinates (after matrix)
 ```
 
@@ -116,6 +116,33 @@ endp
   endif
 endp
 ```
+
+#### Case: inverted face CoordSys (Z sign flipped, tool cuts "through the center")
+
+**Symptoms** (DMC635_SIN-4X, rotor, Nov 2026):
+- Working Z negative and constant on every face (`Z-50.493` → `G1 Z-48.493`), retract `Z-90` — tool goes below the rotation axis
+- Approach goes from more-negative to less-negative Z (tool comes from the face CS **−Z** side)
+- A sequence decreasing (168, 156, …) although VMID has `Positive4xDirOnly="1"`
+
+**Diagnosis:** dump variables (see "Diagnostic dump" below). Seen values at the cut point of face 1:
+`zpos=-48.493 ypos=0` | `zhpos=47.433 yhpos=-10.082` | `rotate_angle_x=first_axis_angle=168`.
+`(yhpos, zhpos)` of the cut and retract points lie on one ray at −12° (radius 48.493 and 90) → the slot is at part angle θ−180. Checking the VMID kinematics (CNC-Trainer: tool at top, which part point is under it for a given A) gave A=12 = 180−θ.
+
+**Fix (rotate the face CS 180° about X + map the angle):**
+```gppl
+; @calc_clean_4axis, indexing branch
+    y_calc = -ypos
+    z_calc = -zpos
+; @start_of_job
+      fourth_axis = 180 - first_axis_angle
+; @rotate
+    fourth_axis = 180 - rotate_angle_x
+```
+Result: `G0 A12` → `G0 X-6 Z90` → `G1 Z48.493` → `G1 X25`; Y stays 0, A increases by +12.
+
+**Do NOT** output `yhpos/zhpos` here — they are part coordinates at A=0, so Y appears and the plunge becomes a tilted Y+Z line.
+
+**Caveat:** on a symmetric part (30 slots × 12°, 180° = 15 pitches) a wrong A mapping is invisible — every face still hits *some* slot. Validate the A formula on an asymmetric feature (single slot/flat) against the SolidCAM simulation.
 
 See: `references/indexing-fixes.md`
 
@@ -277,7 +304,7 @@ See: `references/gppl-syntax.md`
 | Variable | Description | Use for |
 |----------|-------------|---------|
 | `xpos, ypos, zpos` | WCS coordinates (part system) | Indexing, standard |
-| `xhpos, yhpos, zhpos` | MCS coordinates (machine system) | Reference only |
+| `xhpos, yhpos, zhpos` | Main part CoordSys at A=0 (verified on DMC635 indexing: cut point of a face at A168 reads as a point on the −12° ray) — not machine axis values | Locating the feature on the part; wrapping radius |
 | `xmpos, ympos, zmpos` | Matrix-transformed coordinates | 5-axis |
 | `xopos, yopos, zopos` | Operation coordinate system | Local ops |
 | `xlpos, ylpos, zlpos` | Local coordinates | Subroutines |
@@ -318,6 +345,20 @@ endp
 > N130 G0 X73 Y-46.658 Z58.707 A38.476
 ```
 
+### Diagnostic dump (when no trace file is available)
+
+Put temporary comment output at the end of the coordinate routine, regenerate, read the variables right next to the G-code they produce:
+```gppl
+  {nb, ';DBG xpos=', xpos, ' ypos=', ypos, ' zpos=', zpos}
+  {nb, ';DBG xhpos=', xhpos, ' yhpos=', yhpos, ' zhpos=', zhpos}
+  {nb, ';DBG apos=', apos, ' cpos=', cpos, ' rot_ax_x=', rotate_angle_x, ' first_ang=', first_axis_angle, ' rot_type=', rot_axis_type}
+```
+Remove after diagnosis. Don't guess variable semantics from names — dump them.
+
+### Verify rotary direction against VMID kinematics
+
+Load the VMID in CNC-Trainer (MCP): put the tool at the top (`Z=50`), set `A`, read `get_tool_position` → `wcs` shows which part point is under the tool for that A. This tells the A sign convention without touching the machine.
+
 ### Compare Input vs Output
 
 | Trace Variable | Value | G-code Output | Expected | Issue |
@@ -332,6 +373,8 @@ endp
 
 ### Indexing (3+2)
 - [ ] Using `yhpos/zhpos` instead of `ypos/zpos`
+- [ ] Working Z negative/constant on all faces → face CS inverted: use `-ypos/-zpos` and `A = 180 - angle` (verify A on an asymmetric part)
+- [ ] A sequence direction contradicts `Positive4xDirOnly` in VMID
 - [ ] No safe Z retract before A rotation
 - [ ] Outputting A in every block (should be only on face change)
 - [ ] Spurious A-0, A-360 commands
