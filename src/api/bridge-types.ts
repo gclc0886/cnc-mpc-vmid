@@ -31,6 +31,10 @@ export interface StepInfo {
   time: number
   /** Programmed coordinates at this step (as interpolated from the G-code). */
   programmed: { X: number; Y: number; Z: number; A: number; B: number; C: number }
+  /** Machine values per letter after frame, work offset and tool length. */
+  machine: { X: number; Y: number; Z: number; A: number; B: number; C: number }
+  /** Active tool length / radius. */
+  tool: { length: number; radius: number }
   /** Physical axis values the active sub-machine maps them to. */
   axes: Record<string, number>
   /** Which physical axis each programmed letter drives (null = not driven). */
@@ -57,6 +61,21 @@ export interface ParseSummary {
   warnings: number
   /** First diagnostics (up to 50), sorted by line. */
   diagnostics: DiagnosticInfo[]
+}
+
+export interface Offset6 { x: number; y: number; z: number; a: number; b: number; c: number }
+
+export interface SetupInfo {
+  /** Settable work offsets in machine values. */
+  workOffsets: Record<string, Offset6>
+  /** G54 that puts program zero on the workpiece origin of the current machine. */
+  autoWorkOffset: Offset6
+  /** Work offset active at program start. */
+  initialWorkOffset: string
+  tools: Record<string, { length: number; radius: number }>
+  /** Used by the current program. */
+  toolsUsed: string[]
+  workOffsetsUsed: string[]
 }
 
 /** method → { params, result } */
@@ -91,6 +110,13 @@ export interface BridgeMethods {
   add_axis: { params: { parentAxisName: string; deviceId: number; axis: Record<string, unknown> }; result: Ok }
   add_device: { params: { device: Record<string, unknown> }; result: Ok }
   remove_axis: { params: { axisName: string }; result: Ok }
+
+  // --- Setup (work offsets, tool table) ---
+  get_setup: { params: NoParams; result: SetupInfo }
+  /** Partial update: only the given axes change. Re-simulates the program. */
+  set_work_offset: { params: { name: string; offset: Partial<Offset6> }; result: SetupInfo }
+  /** length/radius update; remove=true deletes the entry. Re-simulates the program. */
+  set_tool: { params: { key: string; length?: number; radius?: number; remove?: boolean }; result: SetupInfo }
 
   // --- View ---
   /** JPEG of the app window, base64 (Electron only). */

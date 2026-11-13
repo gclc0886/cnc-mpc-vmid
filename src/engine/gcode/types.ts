@@ -51,6 +51,45 @@ export interface Pos6 { x: number; y: number; z: number; a: number; b: number; c
 export type Plane = 17 | 18 | 19
 export type FeedMode = 'G93' | 'G94' | 'G95'
 
+/** Offsets per programmed axis letter (mm / degrees). */
+export interface AxisOffsets { x: number; y: number; z: number; a: number; b: number; c: number }
+
+export interface ToolEntry {
+  /** Length L1 (mm), applied along the tool axis of the working plane. */
+  length: number
+  /** Radius (mm) — for display; radius compensation is not simulated. */
+  radius: number
+}
+
+/**
+ * Machine setup the program runs against: settable work offsets (G54…) and tool table.
+ * Keys: 'G54'…'G57', 'G505'… ; tool keys are the T value as text ("1", "INSTRUMENT_2")
+ * and, for Fanuc G43 H, the H number as text.
+ */
+export interface MachineSetup {
+  workOffsets: Record<string, AxisOffsets>
+  tools: Record<string, ToolEntry>
+}
+
+/**
+ * Program (WCS) → machine axis values for one move, without kinematic transformation:
+ *   linear: m = R·p + t + offset + toolVec      rotary: m = p + rotShift + offset
+ * R, t: programmable frame (TRANS/ROT…); offset: active G54…; toolVec: tool length along
+ * the working plane's tool axis (G17 → Z, G18 → Y, G19 → X).
+ */
+export interface MoveTransform {
+  /** Row-major 3×3 rotation of the programmable frame. */
+  R: number[]
+  t: [number, number, number]
+  rotShift: [number, number, number]
+  offset: AxisOffsets
+  toolVec: [number, number, number]
+  toolLength: number
+  toolRadius: number
+  /** Key of the active tool in the tool table (null = none). */
+  toolKey: string | null
+}
+
 /** One programmed motion, in program (workpiece) coordinates. */
 export interface ProgramMove {
   /** Index into the lexed blocks / `GCodeBlock[]`. */
@@ -80,6 +119,9 @@ export interface ProgramMove {
   dwell?: number
   tool: { T: number | string | null; D: number }
   workOffset: string
-  /** G53/G153/SUPA: coordinates are machine coordinates for this block. */
+  /** G53/G153/SUPA: the block was programmed in machine coordinates (already converted to WCS). */
   machineCoords: boolean
+  plane: Plane
+  /** How program coordinates of this move become machine axis values. */
+  xf: MoveTransform
 }

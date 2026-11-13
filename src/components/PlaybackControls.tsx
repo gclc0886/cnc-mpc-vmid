@@ -155,7 +155,7 @@ export function PlaybackControls() {
     <div className="playback-controls">
       <div className="playback-header">
         <span className="playback-title">PLAYBACK</span>
-        <button className="playback-parse-btn" onClick={parseGcode} disabled={isPlaying}>
+        <button className="playback-parse-btn" onClick={() => parseGcode()} disabled={isPlaying}>
           Parse G-Code
         </button>
       </div>

@@ -58,24 +58,45 @@ function toolApproachRotation(vec: { x: number; y: number; z: number }): THREE.E
 
 // ═══════════════════════════════════════════════════════════════
 //  SPINDLE + TOOL — combined so they always rotate together
-//  Origin = TCP (tool tip, Z=0). Both shaft and housing go UP.
+//  Origin = spindle leaf = gauge point (spindle nose). Housing goes UP,
+//  the active tool hangs DOWN by its length; TCP axes sit at the tool tip.
 // ═══════════════════════════════════════════════════════════════
 
-function SpindleWithTool({ approachVec }: { approachVec: { x: number; y: number; z: number } }) {
-  const shaftLen = 100
-  const euler = toolApproachRotation(approachVec)
+const NO_TOOL_STUB = 0 // with no tool length the tip is at the spindle nose
+
+function SpindleWithTool({ chain, approachVec }: { chain: KinematicChain; approachVec: { x: number; y: number; z: number } }) {
+  const euler = useMemo(() => toolApproachRotation(approachVec), [approachVec])
+  const toolRef = useRef<THREE.Mesh>(null!)
+  const tipRef = useRef<THREE.Group>(null!)
+  const lastRev = useRef(-1)
+
+  // Tool size follows chain.toolLength / toolRadius (set per playback step)
+  useFrame(() => {
+    if (chain.revision === lastRev.current) return
+    lastRev.current = chain.revision
+    const L = Math.max(chain.toolLength, NO_TOOL_STUB)
+    const R = chain.toolRadius > 0 ? chain.toolRadius : 3
+    if (toolRef.current) {
+      toolRef.current.visible = L > 0
+      toolRef.current.scale.set(R, Math.max(L, 1e-3), R)
+      toolRef.current.position.set(0, 0, -L / 2)
+    }
+    tipRef.current?.position.set(0, 0, -L)
+  })
 
   return (
     <group rotation={euler}>
-      {/* TCP axes at origin (tool tip = Z=0) */}
-      <axesHelper args={[60]} />
-      {/* Tool shaft goes UP from TCP */}
-      <mesh position={[0, 0, shaftLen / 2]} rotation={[Math.PI / 2, 0, 0]}>
-        <cylinderGeometry args={[8, 8, shaftLen, 16]} />
+      {/* Tool tip (TCP) axes */}
+      <group ref={tipRef}>
+        <axesHelper args={[60]} />
+      </group>
+      {/* Tool: unit cylinder scaled to radius × length, below the gauge point */}
+      <mesh ref={toolRef} rotation={[Math.PI / 2, 0, 0]} visible={false}>
+        <cylinderGeometry args={[1, 1, 1, 20]} />
         <meshStandardMaterial color={TOOL_YELLOW} metalness={0.6} roughness={0.2} />
       </mesh>
-      {/* Spindle housing above the tool shaft */}
-      <mesh position={[0, 0, shaftLen + 50]} rotation={[Math.PI / 2, 0, 0]}>
+      {/* Spindle housing above the gauge point */}
+      <mesh position={[0, 0, 50]} rotation={[Math.PI / 2, 0, 0]}>
         <cylinderGeometry args={[50, 55, 100, 32]} />
         <meshStandardMaterial color={SPINDLE_BLUE} metalness={0.4} roughness={0.4} />
       </mesh>
@@ -299,7 +320,7 @@ function renderNodeTree(
       {axisType === 'rotary' && <RotaryDisc vector={node.axis.vector} />}
 
       {/* Spindle housing + tool at leaf of spindle chain (always together) */}
-      {isLeaf && deviceType === 'spindle' && <SpindleWithTool approachVec={approachVec} />}
+      {isLeaf && deviceType === 'spindle' && <SpindleWithTool chain={chain} approachVec={approachVec} />}
 
       {/* Axes at workpiece/table origin */}
       {isLeaf && deviceType === 'table' && <axesHelper args={[60]} />}

@@ -429,6 +429,25 @@ html, body, #root {
   background: #2a3a5e;
 }
 
+.setup-panel { font-size: 11px; }
+.setup-hint { color: #777; font-size: 10px; margin-bottom: 6px; line-height: 1.4; }
+.setup-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.setup-table th { color: #888; font-weight: normal; font-size: 10px; padding: 2px; }
+.setup-table td { padding: 1px 2px; text-align: center; color: #bbb; }
+.setup-table td:first-child { width: 22%; color: #4fc3f7; }
+.setup-table td:last-child, .setup-table th:last-child { width: 42px; }
+.setup-table tr.used td:first-child { color: #81c784; font-weight: bold; }
+.setup-table input {
+  padding: 2px 3px; background: #0a0a1a; color: #e0e0e0; border: 1px solid #333;
+  border-radius: 3px; font-size: 11px; font-family: inherit; text-align: right;
+}
+.setup-missing { color: #ffb74d; font-weight: normal; font-size: 10px; }
+.setup-btn {
+  padding: 2px 6px; background: #1a2a3e; color: #4fc3f7; border: 1px solid #333;
+  border-radius: 3px; cursor: pointer; font-size: 10px; font-family: inherit;
+}
+.setup-btn:disabled { color: #555; cursor: default; }
+
 .editor-row {
   display: flex;
   align-items: center;

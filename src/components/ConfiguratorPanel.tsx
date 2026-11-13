@@ -10,7 +10,8 @@ function safeParseFloat(val: string): number {
   return isNaN(n) ? 0 : n
 }
 
-function NumericInput({ value, onChange, style, step, placeholder }: {
+/** Text input for numbers that commits on Enter or blur (not on every keystroke). */
+export function NumericInput({ value, onChange, style, step, placeholder }: {
   value: number
   onChange: (v: number) => void
   style?: React.CSSProperties

@@ -81,6 +81,29 @@ describe('ISO 841 direction convention on milling presets', () => {
     })
 })
 
+describe('tool length in the kinematics', () => {
+  it('the tool tip hangs L below the spindle nose along the tool axis', () => {
+    const ch = chainFor('3x')
+    ch.updateMatrices()
+    const nose = ch.getToolTipPosition()
+    ch.setTool(100, 5)
+    expectVec(ch.getToolTipPosition(), [nose[0], nose[1], nose[2] - 100])
+    expect(ch.getRelativeMatrix().getTranslation()[2]).toBeCloseTo(250 - 100, 9)
+  })
+
+  it('on a head-head machine the tool tilts with the head', () => {
+    const ch = chainFor('5x_bc')
+    ch.setTool(100, 5)
+    ch.setAxisValues({ B: 90 })
+    const tip = ch.getToolTipPosition()
+    ch.setTool(0, 0)
+    const nose = ch.getToolTipPosition()
+    // B=90 about Y turns the tool axis from −Z to −X
+    expect(tip[0] - nose[0]).toBeCloseTo(-100, 9)
+    expect(tip[2] - nose[2]).toBeCloseTo(0, 9)
+  })
+})
+
 describe('setAxisValues', () => {
   it('assigns several axes with a single matrix update', () => {
     const ch = chainFor('5x_ac')

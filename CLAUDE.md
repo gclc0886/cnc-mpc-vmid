@@ -20,7 +20,7 @@ Claude Code  <-->  MCP Server (stdio, Node.js)
                   Zustand Store <-> KinematicChain Engine
 ```
 
-- **MCP Server**: `mcp-server/cnc-trainer-mcp.ts` — 24 tools, WebSocket relay; method/param/result contract in `src/api/bridge-types.ts` (shared, type-checked on both sides)
+- **MCP Server**: `mcp-server/cnc-trainer-mcp.ts` — 27 tools, WebSocket relay; method/param/result contract in `src/api/bridge-types.ts` (shared, type-checked on both sides)
 - **Bridge Client**: `src/api/BridgeClient.ts` — browser-side WS client, dispatches commands to Zustand store
 - **Store**: `src/store/useMachineStore.ts` — central state (config, chain, toolPath, playback, activeCombination)
 - **Engine**: `src/engine/KinematicChain.ts` — forward kinematics, matrix math, types for Combinations/Channels/AccessPatterns
@@ -28,7 +28,9 @@ Claude Code  <-->  MCP Server (stdio, Node.js)
   `Lexer` (words, calls, strings, `detectDialect` Sinumerik/Fanuc) → `Interpreter` (modal groups G0-3, G17-19,
   G90/91, G93/94/95, G54…, G70/71/700/710, DIAMON, AC/IC/DC/ACP/ACN, R-params, G4, M2/M30; arcs IJK/CR=/R/TURN=;
   `Diagnostic`s for everything not simulated, naming the phase that adds it) → `Interpolator` (1 mm / 1° steps,
-  time per sample from F, G0 per-axis `Rapid` from VMID, G93/G95). Frames, tool length, TRAORI, cycles: not yet (phases 1b–1d)
+  time per sample from F, G0 per-axis `Rapid` from VMID, G93/G95). TRAORI and cycles: not yet (phases 1c–1d)
+- **Program → machine** (`src/engine/gcode/MachineMapper.ts`, no kinematic transformation): axis = R·p + t (TRANS/ATRANS/ROT/AROT, RPY) + work offset (G54…) + tool length along the plane's tool axis (G17→Z). Each `ProgramMove.xf` carries it; samples hold program `x..c` and machine `mx..mc`; `mapPointToAxes` uses the machine values. G53/G153/SUPA targets are converted back to WCS (Sinumerik keeps tool length, Fanuc does not). Tool active on M6 (or on T if the program has no M6); Fanuc length only under G43 H
+- **Setup** (`SetupPanel.tsx`, store `workOffsets`/`tools`): G54 defaults to `computeAutoWorkOffset` (program zero on the table leaf, via a 3×3 Jacobian); simulated control starts in G54; tool table persists in localStorage. The spindle leaf is the gauge point; `chain.setTool()` puts the tool tip L below it (`getToolTipMatrix`)
 - **VMID**: `src/engine/VMIDLoader.ts` — import/export SolidCAM VMID format (Ver 24-58), parses sub-machines, channels, access patterns
 - **3D**: `src/visualization/MachineModel.tsx` — recursive node tree, spindle+tool, protractor discs. Node matrices are copied only when `chain.revision` changes (no per-frame allocations)
 - **Path kinematics**: `src/engine/PathKinematics.ts` — FK over every sample on a private chain → `store.pathKin` (TCP on the part `tcpWork`, in machine `tcpWorld`, limit flags + per-axis summary). Re-run by `analyzePath()` in the store on parse / machine edit / sub-machine change; limit violations become diagnostics
@@ -143,7 +145,10 @@ The VMID loader (`VMIDLoader.ts`) handles SolidCAM Virtual Machine ID format:
 | `get_matrices` | All 4x4 transformation matrices (world + relative) |
 | `get_config` | Full KinematicConfig JSON (includes combinations, channels, accessPatterns) |
 | `get_animation_state` | currentStep, totalSteps, isPlaying |
-| `get_step_info` | `step?` — source line, programmed X..C, mapped physical axes, limit violations; TCP only for the current step. Does not move the machine |
+| `get_step_info` | `step?` — source line, programmed X..C, machine X..C (after frame/offset/tool), tool, mapped physical axes, limit violations; TCP only for the current step. Does not move the machine |
+| `get_setup` | Work offsets G54…G57, auto G54 for this machine, tool table, tools/offsets the program uses |
+| `set_work_offset` | `name`, `offset` (partial) — re-simulates at the current step |
+| `set_tool` | `key`, `length?`, `radius?`, `remove?` — re-simulates at the current step |
 | `capture_screenshot` | `width?` — JPEG of the app window (Electron only) |
 
 ### Machine control

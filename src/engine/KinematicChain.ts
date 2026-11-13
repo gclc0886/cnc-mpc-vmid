@@ -120,6 +120,14 @@ export class KinematicChain {
   deviceNodes: Map<number, KinematicNode[]> = new Map()
   /** Incremented on every matrix update — lets renderers skip unchanged frames. */
   revision = 0
+  /**
+   * Active tool. The spindle leaf is the gauge point (spindle nose); the tool tip is
+   * `toolLength` further along −toolAxis in the leaf's local frame.
+   */
+  toolLength = 0
+  toolRadius = 0
+  /** Tool axis in the spindle leaf frame (unit, pointing from tip to spindle). */
+  toolAxis: { x: number; y: number; z: number } = { x: 0, y: 0, z: 1 }
 
   /** Determine machine category from config for visualization. */
   get machineCategory(): MachineCategory {
@@ -147,6 +155,39 @@ export class KinematicChain {
   constructor(config: KinematicConfig) {
     this.config = config
     this._buildNodes()
+    this.toolAxis = this._findToolAxis()
+  }
+
+  /** Tool axis = direction of the deepest linear axis in the spindle chain (usually Z). */
+  private _findToolAxis(): { x: number; y: number; z: number } {
+    const dev = this.config.devices.find(d => d.type === 'spindle')
+    let v = { x: 0, y: 0, z: 1 }
+    const walk = (axes: AxisDef[]) => {
+      for (const a of axes) {
+        if (a.type === 'linear' && a.vector) v = a.vector
+        if (a.children) walk(a.children)
+      }
+    }
+    if (dev) walk(dev.axes.slice(0, 1))
+    const len = Math.hypot(v.x, v.y, v.z) || 1
+    return { x: v.x / len, y: v.y / len, z: v.z / len }
+  }
+
+  /** Set the active tool (affects the tool tip, not the axis matrices). */
+  setTool(length: number, radius: number) {
+    if (length === this.toolLength && radius === this.toolRadius) return
+    this.toolLength = length
+    this.toolRadius = radius
+    this.revision++
+  }
+
+  /** World matrix of the tool tip: spindle leaf × T(−L · toolAxis). */
+  getToolTipMatrix(): Matrix4x4 {
+    const leaf = this.getDeviceLeafNode('spindle')
+    if (!leaf) return Matrix4x4.identity()
+    if (this.toolLength === 0) return leaf.worldMatrix
+    const L = this.toolLength, a = this.toolAxis
+    return leaf.worldMatrix.multiply(Matrix4x4.translation(-L * a.x, -L * a.y, -L * a.z))
   }
 
   private _buildNodes() {
@@ -317,19 +358,18 @@ export class KinematicChain {
     return deepest
   }
 
-  /** Get tool tip position in world coordinates (forward kinematics result). */
+  /** Tool tip position in world coordinates (forward kinematics result, incl. tool length). */
   getToolTipPosition(): [number, number, number] {
-    const leaf = this.getDeviceLeafNode('spindle')
-    if (!leaf) return [0, 0, 0]
-    return leaf.worldMatrix.getTranslation()
+    if (!this.getDeviceLeafNode('spindle')) return [0, 0, 0]
+    return this.getToolTipMatrix().getTranslation()
   }
 
-  /** Compute relative matrix: Inverse(Workpiece) × Tool */
+  /** Tool tip relative to the workpiece: Inverse(Workpiece) × ToolTip */
   getRelativeMatrix(): Matrix4x4 {
     const toolLeaf = this.getDeviceLeafNode('spindle')
     const workpieceLeaf = this.getDeviceLeafNode('table')
     if (!toolLeaf || !workpieceLeaf) return Matrix4x4.identity()
-    return workpieceLeaf.worldMatrix.inverse().multiply(toolLeaf.worldMatrix)
+    return workpieceLeaf.worldMatrix.inverse().multiply(this.getToolTipMatrix())
   }
 
   /** Get all axis positions as dict. */

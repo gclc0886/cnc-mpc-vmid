@@ -109,8 +109,7 @@ describe('Interpreter — regressions B2–B6', () => {
   it('B6: expressions and R-parameters; frame statements do not move', () => {
     expect(last(moves('R1=10\nG1 X=R1+5 F100')).end.x).toBe(15)
     const m = moves('G0 X1\nTRANS X10 Y20\nG0 X2')
-    expect(m.map(x => x.end.x)).toEqual([1, 2])
-    expect(warnings('TRANS X10').some(d => /TRANS.*phase 1b/.test(d.message))).toBe(true)
+    expect(m.map(x => x.end.x)).toEqual([1, 2]) // program coordinates unchanged; the frame acts on machine values
   })
 })
 

@@ -1,5 +1,6 @@
 import type { Dialect, Pos6, ProgramMove } from './types'
 import type { AxisLetter } from './Interpreter'
+import { toMachine } from './MachineMapper'
 
 /** One simulation sample (program coordinates) — consumed by playback, toolpath and MCP. */
 export interface SimPoint {
@@ -16,6 +17,19 @@ export interface SimPoint {
   blockIndex: number
   /** Program time at this sample, seconds from start. */
   t: number
+  /**
+   * Machine values per programmed letter: x..c after programmable frame, work offset and
+   * tool length (MachineMapper.toMachine). These are what drive the physical axes.
+   */
+  mx: number
+  my: number
+  mz: number
+  ma: number
+  mb: number
+  mc: number
+  /** Active tool length / radius at this sample (mm). */
+  toolLen: number
+  toolRadius: number
 }
 
 export interface InterpolateOptions {
@@ -165,12 +179,16 @@ export function interpolate(moves: ProgramMove[], options: InterpolateOptions = 
     for (let s = 1; s <= n; s++) {
       const f = s / n
       const p = pointAt(m, f)
+      const q = toMachine(m.xf, p)
       points.push({
         ...p,
         feed: speed,
         rapid: m.kind === 'rapid',
         blockIndex: m.blockIndex,
         t: time + seconds * f,
+        mx: q.x, my: q.y, mz: q.z, ma: q.a, mb: q.b, mc: q.c,
+        toolLen: m.xf.toolLength,
+        toolRadius: m.xf.toolRadius,
       })
     }
     time += seconds

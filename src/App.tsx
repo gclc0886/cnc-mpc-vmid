@@ -4,6 +4,7 @@ import { MatrixPanel } from './components/MatrixPanel'
 import { AxisControls } from './components/AxisControls'
 import { GCodeEditor } from './components/GCodeEditor'
 import { ConfiguratorPanel } from './components/ConfiguratorPanel'
+import { SetupPanel } from './components/SetupPanel'
 import { PlaybackControls } from './components/PlaybackControls'
 import { parseVMID, exportVMID } from './engine/VMIDLoader'
 import { useShallow } from 'zustand/react/shallow'
@@ -12,7 +13,7 @@ import { CoordDisplay } from './components/CoordDisplay'
 import { PRESET_NAMES } from './presets/machinePresets'
 import { initBridge, onConnectionChange } from './api/BridgeClient'
 
-type SideTab = 'controls' | 'configurator'
+type SideTab = 'controls' | 'setup' | 'configurator'
 
 function App() {
   // Only slow-changing state here: playback updates go to the panels that show them
@@ -173,6 +174,12 @@ function App() {
             Controls
           </button>
           <button
+            className={`tab-btn ${sideTab === 'setup' ? 'active' : ''}`}
+            onClick={() => setSideTab('setup')}
+          >
+            Setup
+          </button>
+          <button
             className={`tab-btn ${sideTab === 'configurator' ? 'active' : ''}`}
             onClick={() => setSideTab('configurator')}
           >
@@ -193,6 +200,10 @@ function App() {
             <PlaybackControls />
             <MatrixPanel />
           </>
+        )}
+
+        {sideTab === 'setup' && (
+          <SetupPanel />
         )}
 
         {sideTab === 'configurator' && (

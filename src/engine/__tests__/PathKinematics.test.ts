@@ -55,7 +55,10 @@ describe('computePathKinematics', () => {
 
 describe('time and block navigation', () => {
   const pts = (ts: number[], blocks: number[]): SimPoint[] =>
-    ts.map((t, i) => ({ x: 0, y: 0, z: 0, a: 0, b: 0, c: 0, feed: 0, rapid: false, blockIndex: blocks[i], t }))
+    ts.map((t, i) => ({
+      x: 0, y: 0, z: 0, a: 0, b: 0, c: 0, mx: 0, my: 0, mz: 0, ma: 0, mb: 0, mc: 0,
+      toolLen: 0, toolRadius: 0, feed: 0, rapid: false, blockIndex: blocks[i], t,
+    }))
 
   it('stepAtTime finds the first sample at or after t', () => {
     const p = pts([1, 2, 2, 3, 5], [0, 0, 1, 1, 2])

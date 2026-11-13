@@ -1,7 +1,7 @@
 import type {
-  BridgeCommand, BridgeResponse, BridgeMethod, BridgeParams, BridgeResult, StepInfo,
+  BridgeCommand, BridgeResponse, BridgeMethod, BridgeParams, BridgeResult, StepInfo, SetupInfo,
 } from './bridge-types'
-import { useMachineStore } from '../store/useMachineStore'
+import { useMachineStore, INITIAL_WORK_OFFSET } from '../store/useMachineStore'
 import { parseVMID } from '../engine/VMIDLoader'
 import { checkAxisLimit } from '../engine/KinematicChain'
 import type { LimitViolation } from '../engine/KinematicChain'
@@ -151,11 +151,25 @@ function buildStepInfo(stepArg?: number): StepInfo {
     feed: pt.feed,
     time: pt.t,
     programmed: { X: pt.x, Y: pt.y, Z: pt.z, A: pt.a, B: pt.b, C: pt.c },
+    machine: { X: pt.mx, Y: pt.my, Z: pt.mz, A: pt.ma, B: pt.mb, C: pt.mc },
+    tool: { length: pt.toolLen, radius: pt.toolRadius },
     axes,
     mapping: mapping ? describeMapping(mapping) : {},
     activeCombination: combo ? { id: combo.id, name: combo.name } : null,
     limitViolations: violations,
     tcp: step === s.currentStep ? toolPosition() : null,
+  }
+}
+
+function setupInfo(): SetupInfo {
+  const s = store()
+  return {
+    workOffsets: s.workOffsets,
+    autoWorkOffset: s.autoWorkOffset,
+    initialWorkOffset: INITIAL_WORK_OFFSET,
+    tools: s.tools,
+    toolsUsed: s.toolsUsed,
+    workOffsetsUsed: s.workOffsetsUsed,
   }
 }
 
@@ -304,6 +318,27 @@ const handlers: Handlers = {
   remove_axis: ({ axisName }) => {
     store().removeAxis(axisName)
     return { success: true }
+  },
+
+  // --- Setup ---
+
+  get_setup: () => setupInfo(),
+
+  set_work_offset: ({ name, offset }) => {
+    if (!/^G(5[4-7]|5\d\d)$/.test(name)) throw new Error(`Unknown work offset ${name} (use G54…G57, G505…)`)
+    const cur = store().workOffsets[name] ?? { x: 0, y: 0, z: 0, a: 0, b: 0, c: 0 }
+    store().setWorkOffset(name, { ...cur, ...offset })
+    return setupInfo()
+  },
+
+  set_tool: ({ key, length, radius, remove }) => {
+    if (!key) throw new Error('Tool key is required (T value as text, e.g. "1" or "INSTRUMENT_2")')
+    if (remove) store().setTool(key, null)
+    else {
+      const cur = store().tools[key] ?? { length: 0, radius: 0 }
+      store().setTool(key, { length: length ?? cur.length, radius: radius ?? cur.radius })
+    }
+    return setupInfo()
   },
 
   // --- View ---

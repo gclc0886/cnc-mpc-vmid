@@ -353,7 +353,29 @@ server.tool('remove_axis', 'Remove an axis from the configuration', {
   return text(`Removed axis ${axisName}`)
 })
 
-// ===== Group F: View =====
+// ===== Group F: Setup =====
+
+const offsetShape = z.object({
+  x: z.number().optional(), y: z.number().optional(), z: z.number().optional(),
+  a: z.number().optional(), b: z.number().optional(), c: z.number().optional(),
+})
+
+server.tool('get_setup', 'Get work offsets (G54…G57, machine values), the auto G54 for this machine, the tool table and what the current program uses', {},
+  async () => json(await sendCommand('get_setup', {})))
+
+server.tool('set_work_offset', 'Set a settable work offset (machine values). Only the given axes change. The program is re-simulated at the current step.', {
+  name: z.string().describe('G54, G55, G56, G57 or G505…'),
+  offset: offsetShape.describe('Axis values, e.g. {"x": 100, "z": -300}'),
+}, async ({ name, offset }) => json(await sendCommand('set_work_offset', { name, offset })))
+
+server.tool('set_tool', 'Set or remove a tool-table entry. Key = T value as text ("1", "INSTRUMENT_2"); Fanuc: H number under G43. Length acts along the tool axis of the working plane; radius is display-only.', {
+  key: z.string().describe('Tool key'),
+  length: z.number().optional().describe('Tool length L1, mm'),
+  radius: z.number().optional().describe('Tool radius, mm'),
+  remove: z.boolean().optional().describe('Delete the entry'),
+}, async (p) => json(await sendCommand('set_tool', p)))
+
+// ===== Group G: View =====
 
 server.tool('capture_screenshot', 'Capture the CNC Trainer window as an image (Electron only)', {
   width: z.number().int().min(200).max(4000).optional().describe('Max image width in px (default 1200)'),

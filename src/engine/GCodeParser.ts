@@ -9,7 +9,7 @@ import type { InterpolateOptions, SimPoint } from './gcode/Interpolator'
 import type { Diagnostic, Dialect, ProgramMove } from './gcode/types'
 
 export type { SimPoint } from './gcode/Interpolator'
-export type { Diagnostic, Dialect, ProgramMove } from './gcode/types'
+export type { Diagnostic, Dialect, ProgramMove, MachineSetup, AxisOffsets, ToolEntry } from './gcode/types'
 export type { AxisLetter } from './gcode/Interpreter'
 
 /** One non-empty source line. `SimPoint.blockIndex` indexes this array. */
@@ -30,6 +30,10 @@ export interface ParseResult {
   usedAxes: Partial<Record<AxisLetter, number>>
   /** Controller dialect used (auto-detected unless given). */
   dialect: Dialect
+  /** Tool-table keys the program uses (T values / Fanuc H numbers). */
+  toolsUsed: string[]
+  /** Work offsets the program selects. */
+  workOffsetsUsed: string[]
 }
 
 export type ParseOptions = InterpretOptions & Omit<InterpolateOptions, 'dialect'>
@@ -52,5 +56,7 @@ export function parseProgram(text: string, options: ParseOptions = {}): ParseRes
     duration,
     usedAxes: r.usedAxes,
     dialect: r.dialect,
+    toolsUsed: r.toolsUsed,
+    workOffsetsUsed: r.workOffsetsUsed,
   }
 }

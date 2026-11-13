@@ -1,7 +1,11 @@
 import { lexProgram, detectDialect } from './Lexer'
 import { evaluate, ExpressionError } from './Expression'
+import {
+  IDENTITY3, ZERO_OFFSETS, apply3, fromMachine, mul3, rotInPlane, rotRPY, toMachine, toolVector,
+} from './MachineMapper'
 import type {
-  Diagnostic, Dialect, FeedMode, LexedBlock, Plane, Pos6, PosMode, ProgramMove, Severity, Word,
+  AxisOffsets, Diagnostic, Dialect, FeedMode, LexedBlock, MachineSetup, MoveTransform, Plane, Pos6, PosMode,
+  ProgramMove, Severity, Word,
 } from './types'
 
 /**
@@ -23,6 +27,10 @@ export interface InterpretOptions {
   start?: Partial<Pos6>
   /** Initial motion mode (default G0). */
   initialMotion?: 0 | 1
+  /** Work offsets and tool table. Without it, offsets and tool lengths are zero. */
+  setup?: MachineSetup
+  /** Settable work offset active before the program selects one (default 'G500' = none). */
+  initialWorkOffset?: string
 }
 
 export interface InterpretResult {
@@ -35,6 +43,10 @@ export interface InterpretResult {
   ended: boolean
   /** Dialect actually used (resolved when 'auto'). */
   dialect: Dialect
+  /** Tool-table keys the program selects (T values, Fanuc H numbers), in order of first use. */
+  toolsUsed: string[]
+  /** Work offsets the program selects (G54…), in order of first use. */
+  workOffsetsUsed: string[]
 }
 
 /** Sinumerik G-codes accepted without any effect on the simulated path. */
@@ -51,10 +63,9 @@ const IGNORED_G_FANUC = new Set([40, 49, 80, 98, 99, 15, 50, 67, 69, 64, 61, 8, 
 
 /** Fanuc codes recognised but not simulated yet. */
 const LATER_G_FANUC: Record<number, string> = {
-  43: '1b (tool length)', 44: '1b (tool length)', 68: '1b (coordinate rotation)', 51: '1b (scaling)',
-  28: '1b (reference return)', 30: '1b (reference return)', 81: '1d (drilling cycles)', 82: '1d (drilling cycles)',
+  81: '1d (drilling cycles)', 82: '1d (drilling cycles)',
   83: '1d (drilling cycles)', 84: '1d (drilling cycles)', 85: '1d (drilling cycles)', 86: '1d (drilling cycles)',
-  73: '1d (drilling cycles)', 76: '1d (drilling cycles)', 16: '1b (polar coordinates)',
+  73: '1d (drilling cycles)', 76: '1d (drilling cycles)',
 }
 
 /** Keywords accepted silently (motion smoothing, look-ahead, etc.). */
@@ -76,8 +87,6 @@ const FLOW_KEYWORDS = new Set([
 
 /** Features recognised but not simulated yet → warning naming the phase that adds them. */
 const LATER: Record<string, string> = {
-  TRANS: '1b (frames)', ATRANS: '1b (frames)', ROT: '1b (frames)', AROT: '1b (frames)',
-  SCALE: '1b (frames)', ASCALE: '1b (frames)', MIRROR: '1b (frames)', AMIRROR: '1b (frames)',
   TRAORI: '1c (TRAORI/RTCP)', TRANSMIT: '1c (TRANSMIT)', TRACYL: '1c (TRACYL)', CYCLE800: '1c (CYCLE800)',
   CYCLE81: '1d (drilling cycles)', CYCLE82: '1d (drilling cycles)', CYCLE83: '1d (drilling cycles)',
   CYCLE84: '1d (drilling cycles)', CYCLE840: '1d (drilling cycles)', CYCLE85: '1d (drilling cycles)',
@@ -133,13 +142,60 @@ export function interpret(text: string, opts: InterpretOptions = {}): InterpretR
   let inch = false
   let inchFeed = false // G700 (Sinumerik) / G20 (Fanuc) also scale F
   let diamon = false
-  let workOffset = 'G500'
+  let workOffset = opts.initialWorkOffset ?? 'G500'
   let feed = 0
   let spindle = 0
   let tool: ProgramMove['tool'] = { T: null, D: 1 }
   let feedWarned = false
   const params = new Map<string, number>()
   let ended = false
+
+  // ---- Frames, offsets, tools ----
+  const setup = opts.setup
+  let frameR = IDENTITY3
+  let frameT: [number, number, number] = [0, 0, 0]
+  let rotShift: [number, number, number] = [0, 0, 0]
+  // Tool becomes active on M6 when the program uses M6, otherwise as soon as T is programmed
+  const usesM6 = blocks.some(b => b.words.some(w => w.kind === 'addr' && w.letter === 'M' && w.value === 6))
+  let selectedTool: string | null = null
+  let activeTool: string | null = null
+  let fanucLengthComp = false
+  let fanucH: string | null = null
+  const toolsUsed: string[] = []
+  const workOffsetsUsed: string[] = []
+  const noteUsed = (list: string[], k: string) => { if (!list.includes(k)) list.push(k) }
+  const warnedOnce = new Set<string>()
+  const warnOnce = (key: string, line: number, message: string) => {
+    if (warnedOnce.has(key)) return
+    warnedOnce.add(key)
+    diag.add(line, 'warning', message, key)
+  }
+
+  const offsetFor = (name: string, line: number): AxisOffsets => {
+    if (name === 'G500' || !setup) return ZERO_OFFSETS
+    const o = setup.workOffsets[name]
+    if (!o) {
+      warnOnce(`wo ${name}`, line, `Work offset ${name} is not defined — zero used (set it in Setup)`)
+      return ZERO_OFFSETS
+    }
+    return o
+  }
+  const toolFor = (key: string | null, line: number) => {
+    if (key === null || !setup) return null
+    const t = setup.tools[key]
+    if (!t) warnOnce(`tool ${key}`, line, `Tool "${key}" is not in the tool table — length 0 (set it in Setup)`)
+    return t ?? null
+  }
+  const currentXf = (line: number): MoveTransform => {
+    // Length: Sinumerik — active tool with D ≠ 0; Fanuc — only under G43 with H
+    const lengthKey = dialect === 'fanuc' ? (fanucLengthComp ? fanucH : null) : (tool.D !== 0 ? activeTool : null)
+    const length = toolFor(lengthKey, line)?.length ?? 0
+    const radius = (setup && activeTool !== null ? setup.tools[activeTool]?.radius : undefined) ?? 0
+    return {
+      R: frameR, t: frameT, rotShift, offset: offsetFor(workOffset, line),
+      toolVec: toolVector(plane, length), toolLength: length, toolRadius: radius, toolKey: activeTool,
+    }
+  }
 
   const lookup = (name: string) => params.get(name) ?? (/^R\d+$/.test(name) ? 0 : undefined)
 
@@ -175,7 +231,9 @@ export function interpret(text: string, opts: InterpretOptions = {}): InterpretR
         case 94: feedMode = 'G94'; break
         case 95: feedMode = 'G95'; break
         case 53: case 153: machineCoords = true; break
-        case 54: case 55: case 56: case 57: workOffset = `G${g}`; break
+        case 54: case 55: case 56: case 57: workOffset = `G${g}`; noteUsed(workOffsetsUsed, workOffset); break
+        case 43: if (dialect === 'fanuc') { fanucLengthComp = true; break } diag.add(line, 'warning', 'G43 is not a Sinumerik code'); break
+        case 49: if (dialect === 'fanuc') { fanucLengthComp = false; break } diag.add(line, 'warning', 'G49 is not a Sinumerik code'); break
         case 500: workOffset = 'G500'; break
         case 70: inch = true; inchFeed = false; break
         case 71: inch = false; inchFeed = false; break
@@ -191,7 +249,7 @@ export function interpret(text: string, opts: InterpretOptions = {}): InterpretR
             if (IGNORED_G_FANUC.has(g)) break
             if (LATER_G_FANUC[g]) { diag.add(line, 'warning', `G${g} is not simulated yet — phase ${LATER_G_FANUC[g]}`, `G${g}`); break }
           }
-          if (g >= 505 && g <= 599) { workOffset = `G${g}`; break }
+          if (g >= 505 && g <= 599) { workOffset = `G${g}`; noteUsed(workOffsetsUsed, workOffset); break }
           if (!IGNORED_G.has(g)) diag.add(line, 'warning', `G${g} is not supported — ignored`, `G${g}`)
       }
     }
@@ -205,6 +263,13 @@ export function interpret(text: string, opts: InterpretOptions = {}): InterpretR
     let dwellS: number | null = null
     let modalCallPending = false
     let skipMotion = false
+    let frameCmd: string | null = null
+    let rpl: number | null = null
+    const selectTool = (key: string) => {
+      selectedTool = key
+      noteUsed(toolsUsed, key)
+      if (!usesM6) activeTool = key
+    }
 
     for (const w of b.words) {
       switch (w.kind) {
@@ -218,7 +283,7 @@ export function interpret(text: string, opts: InterpretOptions = {}): InterpretR
           break
         }
         case 'string':
-          if (w.letter === 'T') tool = { ...tool, T: w.value }
+          if (w.letter === 'T') selectTool(w.value)
           else diag.add(line, 'warning', `${w.text}: string value for ${w.letter} not supported`)
           break
         case 'keyword': {
@@ -229,9 +294,9 @@ export function interpret(text: string, opts: InterpretOptions = {}): InterpretR
           else if (k === 'MCALL') modalCallPending = true
           else if (k === 'RET') { /* subprogram end in main program: ignore */ }
           else if (FRAME_KEYWORDS.has(k)) {
-            // "TRANS" alone resets the frame (identity until phase 1b); with arguments it defines one
+            // Frame statement: its axis words are frame parameters, applied after this pass
             skipMotion = true
-            if (b.words.length > 1) diag.add(line, 'warning', `${k} is not simulated yet — phase ${LATER[k]}; following positions are shown without this frame`, k)
+            frameCmd = k
           }
           else if (FLOW_KEYWORDS.has(k)) {
             skipMotion = true
@@ -243,7 +308,7 @@ export function interpret(text: string, opts: InterpretOptions = {}): InterpretR
         }
         case 'call': {
           const n = w.name
-          if (FRAME_KEYWORDS.has(n)) { skipMotion = true; diag.add(line, 'warning', `${n} is not simulated yet — phase ${LATER[n]}`, n) }
+          if (FRAME_KEYWORDS.has(n)) { skipMotion = true; diag.add(line, 'warning', `${n}(…) call form is not supported — use "${n} X… Y…"`, n) }
           else if (LATER[n]) diag.add(line, 'warning', `${n} is not simulated yet — phase ${LATER[n]}${modalCallPending ? ' (modal MCALL: holes at following positions are missing)' : ''}`, n)
           else if (!KNOWN_CALLS_IGNORED.has(n)) diag.add(line, 'warning', `Call ${n}(…) is not simulated — ignored`, `call ${n}`)
           break
@@ -271,12 +336,18 @@ export function interpret(text: string, opts: InterpretOptions = {}): InterpretR
             if (dwellBlock) dwellS = v
             else spindle = v
           } else if (L === 'T') {
-            tool = { ...tool, T: v }
+            selectTool(String(v))
           } else if (L === 'D') {
             tool = { ...tool, D: v }
           } else if (L === 'M') {
             if (v === 2 || v === 30) ended = true
+            else if (v === 6) activeTool = selectedTool
             else if (v === 17 && dialect === 'sinumerik') { /* end of subprogram */ }
+          } else if (L === 'H' && dialect === 'fanuc') {
+            fanucH = String(v)
+            noteUsed(toolsUsed, fanucH)
+          } else if (L === 'RPL' && frameCmd) {
+            rpl = v
           } else if (L === 'N' || L === 'H' || L === 'E' || (L === 'O' && dialect === 'fanuc')) {
             // block number inside a line / H & E auxiliary functions / Fanuc program number: no motion
           } else if (L === 'L') {
@@ -294,12 +365,40 @@ export function interpret(text: string, opts: InterpretOptions = {}): InterpretR
       }
     }
 
+    // ---- Frame statements (TRANS/ATRANS/ROT/AROT …) ----
+    if (frameCmd) {
+      const val = (L: AxisLetter) => axisWords[L]?.value ?? 0
+      const lin = (L: AxisLetter) => val(L) * (inch ? 25.4 : 1)
+      const hasArgs = Object.keys(axisWords).length > 0 || rpl !== null
+      if (!hasArgs) {
+        // Bare TRANS / ROT / SCALE / MIRROR: delete the whole programmable frame
+        frameR = IDENTITY3; frameT = [0, 0, 0]; rotShift = [0, 0, 0]
+      } else if (frameCmd === 'TRANS' || frameCmd === 'ATRANS') {
+        const v: [number, number, number] = [lin('X'), lin('Y'), lin('Z')]
+        const r: [number, number, number] = [val('A'), val('B'), val('C')]
+        if (frameCmd === 'TRANS') { frameR = IDENTITY3; frameT = v; rotShift = r }
+        else {
+          const rv = apply3(frameR, v)
+          frameT = [frameT[0] + rv[0], frameT[1] + rv[1], frameT[2] + rv[2]]
+          rotShift = [rotShift[0] + r[0], rotShift[1] + r[1], rotShift[2] + r[2]]
+        }
+      } else if (frameCmd === 'ROT' || frameCmd === 'AROT') {
+        const R = rpl !== null ? rotInPlane(plane, rpl) : rotRPY(val('X'), val('Y'), val('Z'))
+        if (frameCmd === 'ROT') { frameR = R; frameT = [0, 0, 0]; rotShift = [0, 0, 0] }
+        else frameR = mul3(frameR, R)
+      } else {
+        diag.add(line, 'warning', `${frameCmd} with arguments is not simulated — scaling/mirroring ignored`, frameCmd)
+      }
+      continue
+    }
+
     if (skipMotion) continue
 
+    const xf = currentXf(line)
     const baseMove = () => ({
       blockIndex: bi, line,
       feed, feedMode, spindle,
-      tool: { ...tool }, workOffset, machineCoords,
+      tool: { T: activeTool, D: tool.D }, workOffset, machineCoords, plane, xf,
     })
 
     // ---- Dwell ----
@@ -313,8 +412,33 @@ export function interpret(text: string, opts: InterpretOptions = {}): InterpretR
     }
 
     // ---- Target position ----
-    const end: Pos6 = { ...pos }
+    let end: Pos6 = { ...pos }
     let hasAxis = false
+
+    if (machineCoords) {
+      // G53/G153/SUPA: programmed values are machine axis positions. Convert the target to
+      // program coordinates under the current transform, so the axes end exactly there.
+      // Sinumerik keeps the tool length active in G53; Fanuc G53 positions the axis itself.
+      const m = toMachine(xf, pos)
+      for (const L of AXES) {
+        const aw = axisWords[L]
+        if (!aw) continue
+        hasAxis = true
+        if (usedAxes[L] === undefined) usedAxes[L] = line
+        const k = KEY[L]
+        const isLinear = LINEAR.includes(L)
+        let v = aw.value * (isLinear && inch ? 25.4 : 1)
+        if (isLinear && dialect !== 'fanuc') v += xf.toolVec[LINEAR.indexOf(L)]
+        m[k] = v
+      }
+      end = fromMachine(xf, m)
+      if (hasAxis) {
+        moves.push({ ...baseMove(), kind: motion === 0 ? 'rapid' : 'linear', start: { ...pos }, end })
+        Object.assign(pos, end)
+      }
+      continue
+    }
+
     for (const L of AXES) {
       const aw = axisWords[L]
       if (!aw) continue
@@ -325,7 +449,7 @@ export function interpret(text: string, opts: InterpretOptions = {}): InterpretR
       let v = aw.value
       if (isLinear && inch) v *= 25.4
       if (L === 'X' && diamon) v /= 2
-      const mode = aw.mode ?? (absolute || machineCoords ? 'AC' : 'IC')
+      const mode = aw.mode ?? (absolute ? 'AC' : 'IC')
       if (mode === 'AC') end[k] = v
       else if (mode === 'IC') end[k] = pos[k] + v
       else if (isLinear) {
@@ -372,7 +496,7 @@ export function interpret(text: string, opts: InterpretOptions = {}): InterpretR
     Object.assign(pos, end)
   }
 
-  return { blocks, moves, diagnostics: diag.finish(), usedAxes, ended, dialect }
+  return { blocks, moves, diagnostics: diag.finish(), usedAxes, ended, dialect, toolsUsed, workOffsetsUsed }
 }
 
 /** In-plane (u, v) and helix (w) components for each working plane, right-handed. */

@@ -2,10 +2,10 @@ import { create } from 'zustand'
 import { KinematicChain } from '../engine/KinematicChain'
 import type { KinematicConfig, AxisDef, LimitViolation } from '../engine/KinematicChain'
 import { parseProgram } from '../engine/GCodeParser'
-import type { SimPoint, GCodeBlock, Diagnostic, AxisLetter, Dialect } from '../engine/GCodeParser'
+import type { SimPoint, GCodeBlock, Diagnostic, AxisLetter, Dialect, AxisOffsets, ToolEntry } from '../engine/GCodeParser'
 import { buildAxisMapping, mapPointToAxes } from '../engine/AxisMapping'
 import type { AxisMapping } from '../engine/AxisMapping'
-import { computePathKinematics } from '../engine/PathKinematics'
+import { computePathKinematics, computeAutoWorkOffset } from '../engine/PathKinematics'
 import type { PathKinematics } from '../engine/PathKinematics'
 import { PRESETS } from '../presets/machinePresets'
 
@@ -14,6 +14,25 @@ export type TraceFrame = 'work' | 'world'
 
 /** Playback speed multipliers relative to real program time. */
 export const PLAYBACK_SPEEDS = [1, 5, 20, 100, 500] as const
+
+/** Settable work offsets shown in Setup. */
+export const WORK_OFFSET_NAMES = ['G54', 'G55', 'G56', 'G57'] as const
+
+/** The simulated control starts in this work offset (common 828D/840D reset value). */
+export const INITIAL_WORK_OFFSET = 'G54'
+
+const ZERO_OFFSET: AxisOffsets = { x: 0, y: 0, z: 0, a: 0, b: 0, c: 0 }
+const TOOLS_KEY = 'cnc-trainer.tools'
+
+function loadTools(): Record<string, ToolEntry> {
+  try {
+    const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(TOOLS_KEY) : null
+    return raw ? JSON.parse(raw) : {}
+  } catch { return {} }
+}
+function saveTools(tools: Record<string, ToolEntry>) {
+  try { if (typeof localStorage !== 'undefined') localStorage.setItem(TOOLS_KEY, JSON.stringify(tools)) } catch { /* ignore */ }
+}
 
 interface MachineStore {
   // Machine config & chain
@@ -48,6 +67,15 @@ interface MachineStore {
   playbackSpeed: number
   traceFrame: TraceFrame
 
+  // Setup: work offsets (per machine) and tool table (kept across machines and restarts)
+  workOffsets: Record<string, AxisOffsets>
+  /** G54 that puts program zero on the workpiece origin of the current machine. */
+  autoWorkOffset: AxisOffsets
+  tools: Record<string, ToolEntry>
+  /** Tool keys and work offsets the current program uses. */
+  toolsUsed: string[]
+  workOffsetsUsed: string[]
+
   // Active combination (sub-machine) for axis mapping
   activeCombinationId: number | null
   /** Programmed X/Y/Z/A/B/C → physical axis names, resolved from the active combination. */
@@ -67,12 +95,16 @@ interface MachineStore {
 
   // G-code actions
   setGcode: (gcode: string) => void
-  parseGcode: () => void
+  /** Parse and simulate the program; `keepStep` stays at (or near) the current step. */
+  parseGcode: (opts?: { keepStep?: boolean }) => void
   setCurrentStep: (step: number) => void
   setIsPlaying: (playing: boolean) => void
   setToolPath: (points: SimPoint[]) => void
   setPlaybackSpeed: (speed: number) => void
   setTraceFrame: (frame: TraceFrame) => void
+  setWorkOffset: (name: string, offset: AxisOffsets) => void
+  /** Set a tool-table entry; null removes it. */
+  setTool: (key: string, entry: ToolEntry | null) => void
   applyStep: (step: number) => void  // apply toolPath[step] to chain axes
   /** Pause and move to the first sample at or after a 1-based source line. Returns the step, or -1. */
   jumpToLine: (line: number) => number
@@ -146,6 +178,12 @@ export const useMachineStore = create<MachineStore>((set, get) => ({
   playbackSpeed: 20,
   traceFrame: 'work',
 
+  workOffsets: {},
+  autoWorkOffset: { ...ZERO_OFFSET },
+  tools: loadTools(),
+  toolsUsed: [],
+  workOffsetsUsed: [],
+
   selectedNode: null,
   activeCombinationId: null,
   axisMapping: null,
@@ -169,13 +207,21 @@ export const useMachineStore = create<MachineStore>((set, get) => ({
     const combos = config.combinations ?? []
     const keepComb = preserveState && combos.some(c => c.id === prev.activeCombinationId)
     const combId = keepComb ? prev.activeCombinationId : (combos.length > 0 ? combos[0].id : null)
+    const axisMapping = buildAxisMapping(config, chain, combId)
+    const autoWorkOffset = computeAutoWorkOffset(config, axisMapping)
+    // A different machine gets fresh work offsets: G54 on the workpiece origin, the rest zero
+    const workOffsets: Record<string, AxisOffsets> = preserveState && Object.keys(prev.workOffsets).length
+      ? prev.workOffsets
+      : Object.fromEntries(WORK_OFFSET_NAMES.map(n => [n, n === 'G54' ? { ...autoWorkOffset } : { ...ZERO_OFFSET }]))
     set({
       config,
       chain,
       machineName: config.name,
       machineInfo: buildInfoString(config),
       activeCombinationId: combId,
-      axisMapping: buildAxisMapping(config, chain, combId),
+      axisMapping,
+      autoWorkOffset,
+      workOffsets,
       ...(preserveState
         ? {}
         : {
@@ -208,8 +254,9 @@ export const useMachineStore = create<MachineStore>((set, get) => ({
 
   setGcode: (gcode) => set({ gcode }),
 
-  parseGcode: () => {
-    const { gcode, chain, axisMapping } = get()
+  parseGcode: (opts) => {
+    const { gcode, chain, axisMapping, workOffsets, tools } = get()
+    const prevStep = get().currentStep
     // Rapid rates of the physical axes each programmed letter drives (for G0 timing)
     const rapid: Partial<Record<AxisLetter, number>> = {}
     if (chain && axisMapping) {
@@ -219,12 +266,30 @@ export const useMachineStore = create<MachineStore>((set, get) => ({
         if (r) rapid[letters[g][i]] = r
       }))
     }
-    const res = parseProgram(gcode, { rapid })
+    const res = parseProgram(gcode, {
+      rapid, setup: { workOffsets, tools }, initialWorkOffset: INITIAL_WORK_OFFSET,
+    })
     set({
       parsedBlocks: res.blocks, toolPath: res.points, parserDiagnostics: res.diagnostics, usedAxes: res.usedAxes,
-      programDuration: res.duration, gcodeDialect: res.dialect, currentStep: 0, isPlaying: false, stepViolations: [],
+      programDuration: res.duration, gcodeDialect: res.dialect, toolsUsed: res.toolsUsed,
+      workOffsetsUsed: res.workOffsetsUsed, currentStep: 0, isPlaying: false, stepViolations: [],
     })
     analyzePath(get, set)
+    if (opts?.keepStep && res.points.length > 0) get().applyStep(Math.min(prevStep, res.points.length - 1))
+  },
+
+  setWorkOffset: (name, offset) => {
+    set({ workOffsets: { ...get().workOffsets, [name]: { ...offset } } })
+    if (get().toolPath.length > 0) get().parseGcode({ keepStep: true })
+  },
+
+  setTool: (key, entry) => {
+    const tools = { ...get().tools }
+    if (entry) tools[key] = { ...entry }
+    else delete tools[key]
+    saveTools(tools)
+    set({ tools })
+    if (get().toolPath.length > 0) get().parseGcode({ keepStep: true })
   },
 
   setCurrentStep: (step) => set({ currentStep: step }),
@@ -238,7 +303,9 @@ export const useMachineStore = create<MachineStore>((set, get) => ({
     if (!chain || !axisMapping || step < 0 || step >= toolPath.length) return
     // Mapping is pre-resolved (combination axis IDs → names); one matrix update per step.
     // Simulation never clamps — out-of-limit moves are reported, not hidden.
-    const violations = chain.setAxisValues(mapPointToAxes(toolPath[step], axisMapping), false)
+    const pt = toolPath[step]
+    chain.setTool(pt.toolLen, pt.toolRadius)
+    const violations = chain.setAxisValues(mapPointToAxes(pt, axisMapping), false)
     // Keep the same empty array while in limits, so selectors don't see a new value every frame
     const changed = violations.length > 0 || stepViolations.length > 0
     set({

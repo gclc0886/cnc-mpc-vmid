@@ -24,7 +24,7 @@ export const PRESET_3X: KinematicConfig = {
         vector: { x: 0, y: 0, z: 1 },
         offset: { x: 0, y: 0, z: 200 },
         homeRef: 0,
-        limits: { min: -200, max: 400 },
+        limits: { min: -500, max: 200 },
       }],
     },
     {
@@ -69,7 +69,7 @@ export const PRESET_4X: KinematicConfig = {
         vector: { x: 0, y: 0, z: 1 },
         offset: { x: 0, y: 0, z: 200 },
         homeRef: 0,
-        limits: { min: -200, max: 400 },
+        limits: { min: -500, max: 200 },
       }],
     },
     {
@@ -121,7 +121,7 @@ export const PRESET_5X_TRUNNION: KinematicConfig = {
         vector: { x: 0, y: 0, z: 1 },
         offset: { x: 0, y: 0, z: 250 },
         homeRef: 0,
-        limits: { min: -200, max: 500 },
+        limits: { min: -500, max: 200 },
       }],
     },
     {

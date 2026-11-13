@@ -8,13 +8,42 @@ describe('playback through the store', () => {
     store().loadPreset('5x_ac') // A limits ±120
   })
 
-  it('applyStep drives physical axes through the combination mapping', () => {
+  it('applyStep drives physical axes through the combination mapping (plus the auto G54)', () => {
     store().setGcode('G0 X0 Y0 Z0\nG1 X10 Y20 Z-5 F500')
     store().parseGcode()
     const last = store().toolPath.length - 1
     store().applyStep(last)
     expect(store().currentStep).toBe(last)
-    expect(store().chain!.getAllPositions()).toMatchObject({ X: 10, Y: 20, Z: -5 })
+    const g54 = store().workOffsets.G54
+    expect(store().chain!.getAllPositions()).toMatchObject({ X: 10 + g54.x, Y: 20 + g54.y, Z: -5 + g54.z })
+  })
+
+  it('auto G54 puts program zero on the workpiece origin', () => {
+    expect(store().workOffsets.G54.z).toBeCloseTo(-380, 6) // spindle nose 250 above, table leaf 130 below
+    store().setGcode('G54\nG0 X0 Y0 Z0')
+    store().parseGcode()
+    store().applyStep(store().toolPath.length - 1)
+    store().chain!.getRelativeMatrix().getTranslation().forEach(v => expect(v).toBeCloseTo(0, 6))
+  })
+
+  it('tool length lifts the spindle but keeps the tool tip on the program point', () => {
+    store().setTool('1', { length: 100, radius: 5 })
+    store().setGcode('G54\nT1\nG0 X0 Y0 Z0')
+    store().parseGcode()
+    store().applyStep(store().toolPath.length - 1)
+    expect(store().chain!.getAxisValue('Z')).toBeCloseTo(-380 + 100, 6)
+    store().chain!.getRelativeMatrix().getTranslation().forEach(v => expect(v).toBeCloseTo(0, 6))
+    expect(store().toolsUsed).toEqual(['1'])
+    store().setTool('1', null)
+  })
+
+  it('editing a work offset re-simulates at the current step', () => {
+    store().setGcode('G54\nG1 X100 F1000')
+    store().parseGcode()
+    store().applyStep(50)
+    store().setWorkOffset('G54', { ...store().workOffsets.G54, x: 7 })
+    expect(store().currentStep).toBe(50)
+    expect(store().chain!.getAxisValue('X')).toBeCloseTo(51 + 7, 6)
   })
 
   it('does not clamp during simulation and reports the violation', () => {

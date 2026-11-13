@@ -39,11 +39,14 @@ export function buildAxisMapping(
   return { linear: byName(LIN), rotary: byName(ROT), source: 'names' }
 }
 
-/** Physical axis values for one interpolated point under the given mapping. */
+/**
+ * Physical axis values for one interpolated point under the given mapping.
+ * Uses the machine values (after frames, work offset and tool length), not the program values.
+ */
 export function mapPointToAxes(pt: SimPoint, mapping: AxisMapping): Record<string, number> {
   const out: Record<string, number> = {}
-  const lin = [pt.x, pt.y, pt.z]
-  const rot = [pt.a, pt.b, pt.c]
+  const lin = [pt.mx, pt.my, pt.mz]
+  const rot = [pt.ma, pt.mb, pt.mc]
   for (let i = 0; i < 3; i++) {
     const l = mapping.linear[i]
     if (l) out[l] = lin[i]

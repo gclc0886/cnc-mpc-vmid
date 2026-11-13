@@ -5,8 +5,14 @@ import { PRESETS } from '../../presets/machinePresets'
 import type { SimPoint } from '../GCodeParser'
 
 const clone = <T>(x: T): T => JSON.parse(JSON.stringify(x))
-const pt = (p: Partial<SimPoint>): SimPoint =>
-  ({ x: 0, y: 0, z: 0, a: 0, b: 0, c: 0, feed: 100, rapid: false, blockIndex: 0, t: 0, ...p })
+/** Sample whose machine values equal its program values (no offsets). */
+const pt = (p: Partial<SimPoint>): SimPoint => {
+  const q = { x: 0, y: 0, z: 0, a: 0, b: 0, c: 0, ...p }
+  return {
+    ...q, feed: 100, rapid: false, blockIndex: 0, t: 0, toolLen: 0, toolRadius: 0,
+    mx: q.x, my: q.y, mz: q.z, ma: q.a, mb: q.b, mc: q.c,
+  }
+}
 
 describe('buildAxisMapping', () => {
   it('resolves the combination axis order by ID', () => {

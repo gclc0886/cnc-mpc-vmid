@@ -59,7 +59,11 @@ export function MatrixPanel() {
           <div style={{ fontSize: 10, color: '#ff8a65', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 1 }}>
             Tool Chain
           </div>
-          <MatrixDisplay name="Tool → World" matrix={toolLeaf.worldMatrix} highlight="#ff8a65" />
+          <MatrixDisplay
+            name={chain.toolLength ? `Tool tip → World (L=${chain.toolLength})` : 'Tool → World'}
+            matrix={chain.getToolTipMatrix()}
+            highlight="#ff8a65"
+          />
         </div>
       )}
 
