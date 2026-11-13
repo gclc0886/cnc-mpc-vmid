@@ -20,7 +20,7 @@ Claude Code  <-->  MCP Server (stdio, Node.js)
                   Zustand Store <-> KinematicChain Engine
 ```
 
-- **MCP Server**: `mcp-server/cnc-trainer-mcp.ts` — 36 tools, WebSocket relay; method/param/result contract in `src/api/bridge-types.ts` (shared, type-checked on both sides)
+- **MCP Server**: `mcp-server/cnc-trainer-mcp.ts` — 39 tools, WebSocket relay; method/param/result contract in `src/api/bridge-types.ts` (shared, type-checked on both sides)
 - **Bridge Client**: `src/api/BridgeClient.ts` — browser-side WS client, dispatches commands to Zustand store
 - **Store**: `src/store/useMachineStore.ts` — central state (config, chain, toolPath, playback, activeCombination)
 - **Engine**: `src/engine/KinematicChain.ts` — forward kinematics, matrix math, types for Combinations/Channels/AccessPatterns
@@ -39,6 +39,7 @@ Claude Code  <-->  MCP Server (stdio, Node.js)
 - **Path kinematics**: `src/engine/PathKinematics.ts` — FK over every sample on a private chain → `store.pathKin` (TCP on the part `tcpWork`, in machine `tcpWorld`, limit flags + per-axis summary). Re-run by `analyzePath()` in the store on parse / machine edit / sub-machine change; limit violations become diagnostics
 - **Tool trace**: `src/visualization/ToolPath.tsx` draws `pathKin` in the table leaf frame ("on part", moves with the table) or machine frame; whole program faint, executed part bright, out-of-limit red; progress updated in `useFrame`
 - **Playback**: real time × speed (1/5/20/100/500×), `stepAtTime` binary search; panels re-render ≤10 Hz via `useLiveVersion`; editor is CodeMirror 6 (`GCodeEditor.tsx`) with exec-line decoration, diagnostics in the gutter, double-click = jump to line
+- **Learn tab** (`LearnPanel.tsx`, `src/engine/ChainExplain.ts`): every node of the workpiece and tool chains with its formula L = offset · motion, local and world matrices, the tool-length step and Inv(table) · tip; clicking a node sets `selectedNode` → `NodeHighlight` in 3D (axis arrow through the rotation centre). "With / without transformation": the store re-runs the program with `ignoreKinematics` (TRAORI/CYCLE800 off), draws that trace dashed magenta and reports the largest tip difference (`compareTraces`)
 - **Presets**: table-chain axis vectors follow ISO 841 (X+ moves the table −X, table A = (−1,0,0)), see the note in `machinePresets.ts`
 
 ## Data Model
@@ -182,6 +183,9 @@ The VMID loader (`VMIDLoader.ts`) handles SolidCAM Virtual Machine ID format:
 | `run_to_line` | `line` | Pause at the first motion at/after a source line, return step info |
 | `set_playback_speed` | `speed` | 1, 5, 20, 100 or 500 × real time |
 | `set_camera_view` | `view` | iso, front, top, right, left, fit (frame the path) |
+| `set_panel` | `panel`, `node?` | Open controls/setup/learn/configurator; highlight a chain node in 3D |
+| `explain_chain` | — | Node-by-node forward kinematics (formulas, local matrices, world origin/rotation, relative matrix) |
+| `compare_without_transformations` | `show?` | Largest tool-tip difference if TRAORI/CYCLE800 were absent; `show` draws that trace |
 
 **Limits:** jogging clamps; G-code simulation never clamps — out-of-limit values are applied and reported (`limitViolations`, red LIMIT badge in the viewport).
 

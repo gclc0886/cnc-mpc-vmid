@@ -5,7 +5,7 @@ import { parseProgram } from '../engine/GCodeParser'
 import type { SimPoint, GCodeBlock, Diagnostic, AxisLetter, Dialect, AxisOffsets, ToolEntry } from '../engine/GCodeParser'
 import { buildAxisMapping, mapPointToAxes } from '../engine/AxisMapping'
 import type { AxisMapping } from '../engine/AxisMapping'
-import { computePathKinematics, computeAutoWorkOffset } from '../engine/PathKinematics'
+import { computePathKinematics, computeAutoWorkOffset, compareTraces } from '../engine/PathKinematics'
 import { applyKinematics } from '../engine/Kinematics'
 import type { PathKinematics } from '../engine/PathKinematics'
 import { PRESETS } from '../presets/machinePresets'
@@ -15,6 +15,10 @@ export type TraceFrame = 'work' | 'world'
 
 /** Playback speed multipliers relative to real program time. */
 export const PLAYBACK_SPEEDS = [1, 5, 20, 100, 500] as const
+
+/** Side panel tabs. */
+export type SideTab = 'controls' | 'setup' | 'learn' | 'configurator'
+export const SIDE_TABS: SideTab[] = ['controls', 'setup', 'learn', 'configurator']
 
 /** Camera presets: direction in CNC coordinates; 'fit' keeps the direction and frames the trace. */
 export type CameraView = 'iso' | 'front' | 'top' | 'right' | 'left' | 'fit'
@@ -73,6 +77,15 @@ interface MachineStore {
   traceFrame: TraceFrame
   /** Last camera view request; the viewport reacts to a new nonce. */
   cameraRequest: { view: CameraView; nonce: number } | null
+  sideTab: SideTab
+
+  // Teaching: the same program without TRAORI / CYCLE800
+  /** The current program uses TRAORI or CYCLE800. */
+  hasTransformations: boolean
+  compareTransform: boolean
+  /** Tool tip on the part for the program without transformations (xyz per sample of that variant). */
+  comparePath: Float32Array | null
+  compareStats: { maxDev: number; step: number; line: number } | null
 
   // Setup: work offsets (per machine) and tool table (kept across machines and restarts)
   workOffsets: Record<string, AxisOffsets>
@@ -110,6 +123,8 @@ interface MachineStore {
   setPlaybackSpeed: (speed: number) => void
   setTraceFrame: (frame: TraceFrame) => void
   requestCameraView: (view: CameraView) => void
+  setCompareTransform: (on: boolean) => void
+  setSideTab: (tab: SideTab) => void
   setWorkOffset: (name: string, offset: AxisOffsets) => void
   /** Set a tool-table entry; null removes it. */
   setTool: (key: string, entry: ToolEntry | null) => void
@@ -186,6 +201,11 @@ export const useMachineStore = create<MachineStore>((set, get) => ({
   playbackSpeed: 20,
   traceFrame: 'work',
   cameraRequest: null,
+  sideTab: 'controls',
+  hasTransformations: false,
+  compareTransform: false,
+  comparePath: null,
+  compareStats: null,
 
   workOffsets: {},
   autoWorkOffset: { ...ZERO_OFFSET },
@@ -289,6 +309,8 @@ export const useMachineStore = create<MachineStore>((set, get) => ({
       workOffsetsUsed: res.workOffsetsUsed, currentStep: 0, isPlaying: false, stepViolations: [],
     })
     analyzePath(get, set)
+    set({ hasTransformations: res.moves.some(m => m.kin !== 'none' || m.kind === 'swivel') })
+    computeCompare(get, set)
     if (opts?.keepStep && res.points.length > 0) get().applyStep(Math.min(prevStep, res.points.length - 1))
   },
 
@@ -312,6 +334,11 @@ export const useMachineStore = create<MachineStore>((set, get) => ({
   setPlaybackSpeed: (speed) => set({ playbackSpeed: speed }),
   setTraceFrame: (frame) => set({ traceFrame: frame }),
   requestCameraView: (view) => set({ cameraRequest: { view, nonce: (get().cameraRequest?.nonce ?? 0) + 1 } }),
+  setCompareTransform: (on) => {
+    set({ compareTransform: on })
+    computeCompare(get, set)
+  },
+  setSideTab: (tab) => set({ sideTab: tab }),
 
   applyStep: (step) => {
     const { chain, toolPath, axisMapping, stepViolations } = get()
@@ -519,6 +546,28 @@ function analyzePath(get: StoreGet, set: StoreSet) {
   }
   diagnostics.sort((a, b) => (a.line || Infinity) - (b.line || Infinity))
   set({ pathKin, diagnostics })
+}
+
+/**
+ * Teaching comparison: re-run the program without TRAORI / CYCLE800 on the same machine
+ * and setup, and measure how far the tool tip on the part would be from the real path.
+ */
+function computeCompare(get: StoreGet, set: StoreSet) {
+  const { compareTransform, hasTransformations, config, axisMapping, gcode, workOffsets, tools, toolPath, pathKin, parsedBlocks } = get()
+  if (!compareTransform || !hasTransformations || !config || !axisMapping || !pathKin || toolPath.length === 0) {
+    set({ comparePath: null, compareStats: null })
+    return
+  }
+  const alt = parseProgram(gcode, {
+    setup: { workOffsets, tools }, initialWorkOffset: INITIAL_WORK_OFFSET, ignoreKinematics: true,
+  })
+  applyKinematics(alt.points, alt.moves, config, axisMapping)
+  const altKin = computePathKinematics(config, axisMapping, alt.points)
+  const { maxDev, step } = compareTraces({ points: toolPath, tcp: pathKin.tcpWork }, { points: alt.points, tcp: altKin.tcpWork })
+  set({
+    comparePath: altKin.tcpWork,
+    compareStats: { maxDev, step, line: parsedBlocks[toolPath[step]?.blockIndex]?.line ?? 0 },
+  })
 }
 
 /** Programmed letters that the mapping drives. */

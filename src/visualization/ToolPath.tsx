@@ -23,6 +23,23 @@ export function ToolPathLine({ chain }: { chain: KinematicChain }) {
   const toolPath = useMachineStore(s => s.toolPath)
   const pathKin = useMachineStore(s => s.pathKin)
   const traceFrame = useMachineStore(s => s.traceFrame)
+  const comparePath = useMachineStore(s => s.comparePath)
+
+  // Teaching: the same program without TRAORI / CYCLE800, dashed (part frame only)
+  const ghost = useMemo(() => {
+    if (!comparePath || traceFrame !== 'work') return null
+    const g = new THREE.BufferGeometry()
+    g.setAttribute('position', new THREE.BufferAttribute(comparePath, 3))
+    const line = new THREE.Line(g, new THREE.LineDashedMaterial({ color: 0xe040fb, dashSize: 4, gapSize: 3, transparent: true, opacity: 0.85 }))
+    line.computeLineDistances()
+    line.frustumCulled = false
+    return line
+  }, [comparePath, traceFrame])
+  useEffect(() => () => {
+    if (!ghost) return
+    ghost.geometry.dispose()
+    ;(ghost.material as THREE.Material).dispose()
+  }, [ghost])
 
   const groupRef = useRef<THREE.Group>(null!)
   const markerRef = useRef<THREE.Mesh>(null!)
@@ -103,6 +120,7 @@ export function ToolPathLine({ chain }: { chain: KinematicChain }) {
     <group ref={groupRef} matrixAutoUpdate={false}>
       <primitive object={scene.ghost} />
       <primitive object={scene.progress} />
+      {ghost && <primitive object={ghost} />}
       <mesh ref={markerRef}>
         <sphereGeometry args={[2, 8, 8]} />
         <meshStandardMaterial color="#f44336" emissive="#f44336" emissiveIntensity={0.8} />

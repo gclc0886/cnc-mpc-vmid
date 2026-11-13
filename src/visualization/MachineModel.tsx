@@ -1,7 +1,8 @@
-import React, { useRef, useMemo, type ReactNode } from 'react'
+import React, { useRef, useMemo, useEffect, type ReactNode } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import type { KinematicChain, KinematicNode, MachineCategory } from '../engine/KinematicChain'
+import { useMachineStore } from '../store/useMachineStore'
 
 interface Props {
   chain: KinematicChain
@@ -303,6 +304,34 @@ function findDeepestLinearVector(node: KinematicNode): { x: number; y: number; z
   return deepestVec
 }
 
+/**
+ * Teaching highlight of one node (Learn panel / configurator selection): an arrow along the
+ * axis — through the rotation centre for a rotary axis — and a marker at the frame origin.
+ */
+function NodeHighlight({ node }: { node: KinematicNode }) {
+  const a = node.axis
+  const arrow = useMemo(() => {
+    const dir = new THREE.Vector3(a.vector.x, a.vector.y, a.vector.z)
+    if (dir.lengthSq() < 1e-12) return null
+    dir.normalize()
+    const c = a.type === 'rotary' && a.center ? a.center : { x: 0, y: 0, z: 0 }
+    const color = a.type === 'rotary' ? 0xffb74d : 0x81c784
+    const origin = new THREE.Vector3(c.x, c.y, c.z).addScaledVector(dir, -60)
+    return new THREE.ArrowHelper(dir, origin, 180, color, 24, 12)
+  }, [a])
+  useEffect(() => () => { arrow?.dispose() }, [arrow])
+  return (
+    <group>
+      {arrow && <primitive object={arrow} />}
+      <mesh>
+        <sphereGeometry args={[6, 16, 16]} />
+        <meshBasicMaterial color="#e040fb" />
+      </mesh>
+      <axesHelper args={[90]} />
+    </group>
+  )
+}
+
 function renderNodeTree(
   chain: KinematicChain,
   node: KinematicNode,
@@ -310,12 +339,14 @@ function renderNodeTree(
   _category: MachineCategory,
   depth: number,
   approachVec: { x: number; y: number; z: number },
+  selected: string | null,
 ): React.JSX.Element {
   const isLeaf = node.children.length === 0
   const axisType = node.axis.type
 
   return (
     <AxisNodeGroup key={node.axis.id} chain={chain} node={node}>
+      {selected === node.axis.name && <NodeHighlight node={node} />}
       {/* Rotary disc indicator */}
       {axisType === 'rotary' && <RotaryDisc vector={node.axis.vector} />}
 
@@ -325,7 +356,7 @@ function renderNodeTree(
       {/* Axes at workpiece/table origin */}
       {isLeaf && deviceType === 'table' && <axesHelper args={[60]} />}
 
-      {node.children.map(child => renderNodeTree(chain, child, deviceType, _category, depth + 1, approachVec))}
+      {node.children.map(child => renderNodeTree(chain, child, deviceType, _category, depth + 1, approachVec, selected))}
     </AxisNodeGroup>
   )
 }
@@ -336,6 +367,7 @@ function renderNodeTree(
 
 export function MachineModel({ chain }: Props) {
   const category = chain.machineCategory
+  const selected = useMachineStore(s => s.selectedNode)
 
   return (
     <group>
@@ -353,7 +385,7 @@ export function MachineModel({ chain }: Props) {
             : { x: 0, y: 0, z: 1 }
           return (
             <group key={dev.id}>
-              {deviceNodes.map(rootNode => renderNodeTree(chain, rootNode, dev.type, category, 0, approachVec))}
+              {deviceNodes.map(rootNode => renderNodeTree(chain, rootNode, dev.type, category, 0, approachVec, selected))}
             </group>
           )
         } catch (e) {

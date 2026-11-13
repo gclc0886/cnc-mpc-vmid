@@ -156,8 +156,18 @@ export interface BridgeMethods {
   run_to_line: { params: { line: number }; result: StepInfo }
   set_playback_speed: { params: { speed: number }; result: { speed: number; allowed: number[] } }
 
+  // --- Teaching ---
+  /** Forward kinematics explained node by node at the current machine state. */
+  explain_chain: { params: NoParams; result: unknown }
+  compare_without_transformations: {
+    params: { show?: boolean }
+    result: { hasTransformations: boolean; maxDeviation: number | null; step: number | null; line: number | null; source: string | null }
+  }
+
   // --- View ---
   set_camera_view: { params: { view: string }; result: Ok }
+  /** Open a side panel tab; optionally highlight a chain node (axis name) in 3D and in Learn. */
+  set_panel: { params: { panel: string; node?: string | null }; result: Ok }
   /** JPEG of the app window, base64 (Electron only). */
   capture_screenshot: { params: { width?: number }; result: { mimeType: 'image/jpeg'; data: string; width: number; height: number } }
 }

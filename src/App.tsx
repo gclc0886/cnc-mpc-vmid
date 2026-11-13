@@ -5,6 +5,7 @@ import { AxisControls } from './components/AxisControls'
 import { GCodeEditor } from './components/GCodeEditor'
 import { ConfiguratorPanel } from './components/ConfiguratorPanel'
 import { SetupPanel } from './components/SetupPanel'
+import { LearnPanel } from './components/LearnPanel'
 import { PlaybackControls } from './components/PlaybackControls'
 import { parseVMID, exportVMID } from './engine/VMIDLoader'
 import { useShallow } from 'zustand/react/shallow'
@@ -13,7 +14,6 @@ import { CoordDisplay } from './components/CoordDisplay'
 import { PRESET_NAMES } from './presets/machinePresets'
 import { initBridge, onConnectionChange } from './api/BridgeClient'
 
-type SideTab = 'controls' | 'setup' | 'configurator'
 
 function App() {
   // Only slow-changing state here: playback updates go to the panels that show them
@@ -23,7 +23,8 @@ function App() {
     requestCameraView: s.requestCameraView,
   })))
 
-  const [sideTab, setSideTab] = useState<SideTab>('controls')
+  const sideTab = useMachineStore(s => s.sideTab)
+  const setSideTab = useMachineStore(s => s.setSideTab)
   const [bridgeConnected, setBridgeConnected] = useState(false)
   const [sideWidth, setSideWidth] = useState(360)
   const [bottomHeight, setBottomHeight] = useState(200)
@@ -185,6 +186,12 @@ function App() {
             Setup
           </button>
           <button
+            className={`tab-btn ${sideTab === 'learn' ? 'active' : ''}`}
+            onClick={() => setSideTab('learn')}
+          >
+            Learn
+          </button>
+          <button
             className={`tab-btn ${sideTab === 'configurator' ? 'active' : ''}`}
             onClick={() => setSideTab('configurator')}
           >
@@ -209,6 +216,10 @@ function App() {
 
         {sideTab === 'setup' && (
           <SetupPanel />
+        )}
+
+        {sideTab === 'learn' && (
+          <LearnPanel />
         )}
 
         {sideTab === 'configurator' && (

@@ -84,6 +84,35 @@ export function computePathKinematics(
 }
 
 /**
+ * Largest distance between two traces of the same program (tcp arrays, xyz per sample),
+ * matching samples by block and by their order within the block — the variants may have
+ * different sample counts (e.g. CYCLE800 adds a swivel move).
+ */
+export function compareTraces(
+  a: { points: SimPoint[]; tcp: Float32Array },
+  b: { points: SimPoint[]; tcp: Float32Array },
+): { maxDev: number; step: number } {
+  const byBlock = new Map<number, number[]>()
+  b.points.forEach((p, i) => {
+    let list = byBlock.get(p.blockIndex)
+    if (!list) { list = []; byBlock.set(p.blockIndex, list) }
+    list.push(i)
+  })
+  const seen = new Map<number, number>()
+  let maxDev = 0, step = 0
+  a.points.forEach((p, i) => {
+    const k = seen.get(p.blockIndex) ?? 0
+    seen.set(p.blockIndex, k + 1)
+    const list = byBlock.get(p.blockIndex)
+    if (!list || list.length === 0) return
+    const j = list[Math.min(k, list.length - 1)]
+    const d = Math.hypot(a.tcp[i * 3] - b.tcp[j * 3], a.tcp[i * 3 + 1] - b.tcp[j * 3 + 1], a.tcp[i * 3 + 2] - b.tcp[j * 3 + 2])
+    if (d > maxDev) { maxDev = d; step = i }
+  })
+  return { maxDev, step }
+}
+
+/**
  * Work offset that puts program zero on the workpiece origin (table leaf), with all
  * axes at zero and no tool: the linear axis values for which the tool tip coincides
  * with the table leaf origin. Solved through the kinematics (3×3 Jacobian of the

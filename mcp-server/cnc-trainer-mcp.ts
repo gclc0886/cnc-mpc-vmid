@@ -421,7 +421,24 @@ server.tool('set_playback_speed', 'Playback speed as a multiple of real program 
   speed: z.number().describe('1, 5, 20, 100 or 500'),
 }, async ({ speed }) => json(await sendCommand('set_playback_speed', { speed })))
 
-// ===== Group I: View =====
+// ===== Group I: Teaching =====
+
+server.tool('explain_chain', 'Forward kinematics explained at the current machine state: every node of the workpiece and tool chains with its local transform formula (offset · motion), local matrix, accumulated world origin/rotation; the tool-length step and the relative matrix Inv(table) · tool tip', {},
+  async () => json(await sendCommand('explain_chain', {})))
+
+server.tool('compare_without_transformations', 'Run the current program as if TRAORI/CYCLE800 were absent and report the largest tool-tip difference on the part (and where). show=true draws that trace dashed in the viewport; show=false hides it.', {
+  show: z.boolean().optional(),
+}, async ({ show }) => json(await sendCommand('compare_without_transformations', { show })))
+
+// ===== Group J: View =====
+
+server.tool('set_panel', 'Open a side panel tab (controls, setup, learn, configurator); optionally highlight a chain node by axis name (null clears)', {
+  panel: z.enum(['controls', 'setup', 'learn', 'configurator']),
+  node: z.string().nullable().optional().describe('Axis name to highlight in 3D, e.g. "A"'),
+}, async ({ panel, node }) => {
+  await sendCommand('set_panel', { panel, node })
+  return text(`Panel: ${panel}${node ? `, highlighted ${node}` : ''}`)
+})
 
 server.tool('set_camera_view', 'Move the 3D camera: iso, front, top, right, left, or fit (frame the tool path, keep direction)', {
   view: z.enum(['iso', 'front', 'top', 'right', 'left', 'fit']),

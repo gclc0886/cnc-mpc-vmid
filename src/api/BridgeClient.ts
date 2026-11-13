@@ -1,12 +1,13 @@
 import type {
   BridgeCommand, BridgeResponse, BridgeMethod, BridgeParams, BridgeResult, StepInfo, SetupInfo, CombinationsInfo,
 } from './bridge-types'
-import { useMachineStore, INITIAL_WORK_OFFSET, PLAYBACK_SPEEDS, CAMERA_VIEWS } from '../store/useMachineStore'
-import type { CameraView } from '../store/useMachineStore'
+import { useMachineStore, INITIAL_WORK_OFFSET, PLAYBACK_SPEEDS, CAMERA_VIEWS, SIDE_TABS } from '../store/useMachineStore'
+import type { CameraView, SideTab } from '../store/useMachineStore'
 import { parseVMID, exportVMID } from '../engine/VMIDLoader'
 import { checkAxisLimit } from '../engine/KinematicChain'
 import type { LimitViolation } from '../engine/KinematicChain'
 import { mapPointToAxes, describeMapping, buildAxisMapping } from '../engine/AxisMapping'
+import { explainChain } from '../engine/ChainExplain'
 
 /** 3100 by default; `?bridgePort=NNNN` (set by Electron from CNC_BRIDGE_PORT) overrides it. */
 const BRIDGE_PORT = (() => {
@@ -413,7 +414,52 @@ const handlers: Handlers = {
     return { speed, allowed }
   },
 
+  // --- Teaching ---
+
+  explain_chain: () => {
+    const ex = explainChain(requireChain())
+    const t = (m: { getTranslation(): [number, number, number] }) => m.getTranslation().map(v => +v.toFixed(4))
+    return {
+      devices: ex.devices.map(d => ({
+        name: d.name, type: d.type,
+        steps: d.steps.map(s => ({
+          axis: s.name, type: s.type, value: s.value, formula: s.formula,
+          worldOrigin: t(s.world), worldRotation: { angle: +s.rotation.angle.toFixed(4), axis: s.rotation.axis },
+          local: s.local.data.map(v => +v.toFixed(6)),
+        })),
+      })),
+      tool: ex.tool ? { length: ex.tool.length, axis: ex.tool.axis, tipOrigin: t(ex.tool.tip) } : null,
+      relative: ex.relative ? { formula: 'Inv(W_table) · W_tip', origin: t(ex.relative), matrix: ex.relative.data.map(v => +v.toFixed(6)) } : null,
+    }
+  },
+
+  compare_without_transformations: ({ show }) => {
+    const s0 = store()
+    if (s0.toolPath.length === 0) throw new Error('No tool path — call parse_gcode first')
+    if (!s0.compareTransform || show !== undefined) s0.setCompareTransform(show ?? true)
+    const s = store()
+    const st = s.compareStats
+    const block = st ? s.parsedBlocks[s.toolPath[st.step]?.blockIndex ?? -1] : undefined
+    return {
+      hasTransformations: s.hasTransformations,
+      maxDeviation: st ? st.maxDev : null,
+      step: st ? st.step : null,
+      line: st ? st.line : null,
+      source: block?.raw ?? null,
+    }
+  },
+
   // --- View ---
+
+  set_panel: ({ panel, node }) => {
+    if (!(SIDE_TABS as string[]).includes(panel)) throw new Error(`Panel must be one of ${SIDE_TABS.join(', ')}`)
+    store().setSideTab(panel as SideTab)
+    if (node !== undefined) {
+      if (node !== null && !requireChain().nodes.has(node)) throw new Error(`Unknown axis: ${node}`)
+      store().setSelectedNode(node)
+    }
+    return { success: true }
+  },
 
   set_camera_view: ({ view }) => {
     if (!(CAMERA_VIEWS as string[]).includes(view)) throw new Error(`View must be one of ${CAMERA_VIEWS.join(', ')}`)

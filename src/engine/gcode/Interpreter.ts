@@ -33,6 +33,11 @@ export interface InterpretOptions {
   setup?: MachineSetup
   /** Settable work offset active before the program selects one (default 'G500' = none). */
   initialWorkOffset?: string
+  /**
+   * Teaching/compare mode: run the program as if TRAORI and CYCLE800 were absent
+   * (axes take the programmed values directly).
+   */
+  ignoreKinematics?: boolean
 }
 
 export interface InterpretResult {
@@ -401,7 +406,7 @@ export function interpret(text: string, opts: InterpretOptions = {}): InterpretR
         case 'keyword': {
           const k = w.name
           if (k === 'SUPA') machineCoords = true
-          else if (k === 'TRAORI') traori = true
+          else if (k === 'TRAORI') traori = !opts.ignoreKinematics
           else if (k === 'TRAFOOF') traori = false
           else if (k === 'DIAMON' || k === 'DIAM90') diamon = true
           else if (k === 'DIAMOF') diamon = false
@@ -422,7 +427,7 @@ export function interpret(text: string, opts: InterpretOptions = {}): InterpretR
         }
         case 'call': {
           const n = w.name
-          if (n === 'TRAORI') { traori = true; break }
+          if (n === 'TRAORI') { traori = !opts.ignoreKinematics; break }
           if (SINUMERIK_CYCLES.has(n)) {
             cycleCallInBlock = true
             const args = evalArgs(w.args)
@@ -444,6 +449,7 @@ export function interpret(text: string, opts: InterpretOptions = {}): InterpretR
             if (!modalCycle && !modalCallPending) diag.add(line, 'warning', `${n} without an active MCALL cycle — the tool only visits the positions`, 'holes no mcall')
             break
           }
+          if (n === 'CYCLE800' && opts.ignoreKinematics) break
           if (n === 'CYCLE800') {
             const r = applyCycle800(w.args, line)
             if (r) swivelMove = r
@@ -504,7 +510,7 @@ export function interpret(text: string, opts: InterpretOptions = {}): InterpretR
             diag.add(line, 'warning', `${L}= (polar/chamfer/contour definition) is not supported — ignored`, L)
           } else if (L === 'A3' || L === 'B3' || L === 'C3') {
             orientWords[L] = v
-            if (!traori) diag.add(line, 'warning', `${L}= orientation vector without TRAORI — ignored`, 'orient without TRAORI')
+            if (!traori && !opts.ignoreKinematics) diag.add(line, 'warning', `${L}= orientation vector without TRAORI — ignored`, 'orient without TRAORI')
           } else if (L.length > 1 && /^[XYZABC]\d+$/.test(L)) {
             diag.add(line, 'warning', `Axis address ${L}= is not mapped — ignored`, `addr ${L}`)
           } else {
