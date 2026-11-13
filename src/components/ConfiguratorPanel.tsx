@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import { useMachineStore } from '../store/useMachineStore'
 import type { AxisDef } from '../engine/KinematicChain'
 import { PRESET_NAMES } from '../presets/machinePresets'
@@ -122,7 +123,9 @@ function findAxisInConfig(axes: AxisDef[], name: string): AxisDef | null {
 }
 
 function NodeEditor({ axisName }: { axisName: string }) {
-  const { config, updateAxis, removeAxis } = useMachineStore()
+  const config = useMachineStore(s => s.config)
+  const updateAxis = useMachineStore(s => s.updateAxis)
+  const removeAxis = useMachineStore(s => s.removeAxis)
   if (!config) return null
 
   let axis: AxisDef | null = null
@@ -268,7 +271,10 @@ function NodeEditor({ axisName }: { axisName: string }) {
 }
 
 export function ConfiguratorPanel() {
-  const { config, selectedNode, setSelectedNode, addAxis, loadPreset } = useMachineStore()
+  const { config, selectedNode, setSelectedNode, addAxis, loadPreset } = useMachineStore(useShallow(s => ({
+    config: s.config, selectedNode: s.selectedNode, setSelectedNode: s.setSelectedNode,
+    addAxis: s.addAxis, loadPreset: s.loadPreset,
+  })))
   const [addingTo, setAddingTo] = useState<{ deviceId: number; parentName: string } | null>(null)
   const [newAxisName, setNewAxisName] = useState('')
   const [newAxisType, setNewAxisType] = useState<'linear' | 'rotary'>('linear')

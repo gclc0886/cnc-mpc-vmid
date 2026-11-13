@@ -1,4 +1,5 @@
 import { useMachineStore } from '../store/useMachineStore'
+import { useLiveVersion } from '../hooks/useLiveVersion'
 import type { Matrix4x4 } from '../engine/Matrix4x4'
 
 function MatrixDisplay({ name, matrix, highlight }: { name: string; matrix: Matrix4x4; highlight?: string }) {
@@ -29,8 +30,8 @@ function MatrixDisplay({ name, matrix, highlight }: { name: string; matrix: Matr
 }
 
 export function MatrixPanel() {
-  const { chain, version } = useMachineStore()
-  void version
+  const chain = useMachineStore(s => s.chain)
+  useLiveVersion()
 
   if (!chain) {
     return (

@@ -1,94 +1,112 @@
 import { useMemo, useRef, useEffect } from 'react'
+import { useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
-import type { SimPoint } from '../engine/GCodeParser'
+import type { KinematicChain } from '../engine/KinematicChain'
+import { useMachineStore } from '../store/useMachineStore'
 
-interface Props {
-  points: SimPoint[]
-  currentStep: number
-}
+const RAPID = new THREE.Color('#ff9800')
+const FEED = new THREE.Color('#00bcd4')
+const LIMIT = new THREE.Color('#ff1744')
 
 /**
- * Optimized toolpath renderer.
- * Geometry is built once when points change.
- * drawRange is updated cheaply each step via precomputed lookup arrays.
+ * Tool trace from forward kinematics of the whole program (store.pathKin).
+ *
+ * 'work' frame: the trace is drawn in the table leaf frame and moves with the table —
+ * this is the path the tool cuts on the part (wraps around the cylinder on a 4-axis).
+ * 'world' frame: tool tip positions in machine space.
+ *
+ * The whole program is shown faint; the executed part is bright. Out-of-limit samples
+ * are red. Progress, marker and table frame are updated imperatively in useFrame,
+ * so playback does not re-render React.
  */
-export function ToolPathLine({ points, currentStep }: Props) {
-  const rapidRef = useRef<THREE.BufferGeometry>(null!)
-  const feedRef = useRef<THREE.BufferGeometry>(null!)
+export function ToolPathLine({ chain }: { chain: KinematicChain }) {
+  const toolPath = useMachineStore(s => s.toolPath)
+  const pathKin = useMachineStore(s => s.pathKin)
+  const traceFrame = useMachineStore(s => s.traceFrame)
 
-  // Build geometry + precompute step→drawCount lookup
-  const { rapidGeom, feedGeom, rapidCountAt, feedCountAt } = useMemo(() => {
-    const rapidPts: THREE.Vector3[] = []
-    const feedPts: THREE.Vector3[] = []
-    // For each step i, how many rapid/feed vertices are visible
-    const rCountAt = new Uint32Array(points.length + 1)
-    const fCountAt = new Uint32Array(points.length + 1)
-    let rCount = 0
-    let fCount = 0
+  const groupRef = useRef<THREE.Group>(null!)
+  const markerRef = useRef<THREE.Mesh>(null!)
+  const last = useRef({ step: -1, rev: -1, frame: '' })
 
-    for (let i = 0; i < points.length; i++) {
-      const p = points[i]
-      const v = new THREE.Vector3(p.x, p.y, p.z)
-      if (p.rapid) {
-        rapidPts.push(v)
-        rCount++
-      } else {
-        feedPts.push(v)
-        fCount++
-      }
-      rCountAt[i + 1] = rCount
-      fCountAt[i + 1] = fCount
+  const tableLeaf = useMemo(() => chain.getDeviceLeafNode('table'), [chain])
+
+  const scene = useMemo(() => {
+    if (!pathKin || toolPath.length === 0) return null
+    const src = traceFrame === 'work' ? pathKin.tcpWork : pathKin.tcpWorld
+    const n = toolPath.length
+    const colors = new Float32Array(n * 3)
+    for (let i = 0; i < n; i++) {
+      const c = pathKin.limitFlags[i] ? LIMIT : toolPath[i].rapid ? RAPID : FEED
+      colors[i * 3] = c.r; colors[i * 3 + 1] = c.g; colors[i * 3 + 2] = c.b
     }
+    const position = new THREE.BufferAttribute(src, 3)
+    const color = new THREE.BufferAttribute(colors, 3)
 
-    return {
-      rapidGeom: new THREE.BufferGeometry().setFromPoints(
-        rapidPts.length > 0 ? rapidPts : [new THREE.Vector3()]
-      ),
-      feedGeom: new THREE.BufferGeometry().setFromPoints(
-        feedPts.length > 0 ? feedPts : [new THREE.Vector3()]
-      ),
-      rapidCountAt: rCountAt,
-      feedCountAt: fCountAt,
-    }
-  }, [points])
+    const ghostGeom = new THREE.BufferGeometry()
+    ghostGeom.setAttribute('position', position)
+    ghostGeom.setAttribute('color', color)
+    const progressGeom = new THREE.BufferGeometry()
+    progressGeom.setAttribute('position', position)
+    progressGeom.setAttribute('color', color)
+    progressGeom.setDrawRange(0, 0)
 
-  // Update drawRange — O(1) lookup, no loops
+    const ghost = new THREE.Line(ghostGeom, new THREE.LineBasicMaterial({
+      vertexColors: true, transparent: true, opacity: 0.22, depthWrite: false,
+    }))
+    const progress = new THREE.Line(progressGeom, new THREE.LineBasicMaterial({ vertexColors: true }))
+    // The trace moves with the table; bounding spheres would be stale, so never cull it
+    ghost.frustumCulled = false
+    progress.frustumCulled = false
+    return { src, ghost, progress, progressGeom }
+  }, [pathKin, toolPath, traceFrame])
+
   useEffect(() => {
-    const idx = Math.min(currentStep + 1, points.length)
-    if (rapidRef.current) rapidRef.current.setDrawRange(0, rapidCountAt[idx])
-    if (feedRef.current) feedRef.current.setDrawRange(0, feedCountAt[idx])
-  }, [currentStep, points.length, rapidCountAt, feedCountAt])
+    last.current = { step: -1, rev: -1, frame: '' }
+    return () => {
+      if (!scene) return
+      for (const l of [scene.ghost, scene.progress]) {
+        l.geometry.dispose()
+        ;(l.material as THREE.Material).dispose()
+      }
+    }
+  }, [scene])
 
-  const currentPt = points[currentStep]
-  const currentPos = currentPt
-    ? new THREE.Vector3(currentPt.x, currentPt.y, currentPt.z)
-    : null
+  useFrame(() => {
+    if (!scene || !groupRef.current) return
+    const g = groupRef.current
 
+    // Attach to the table leaf (work frame) or to machine space
+    const wantWork = traceFrame === 'work' && tableLeaf !== null
+    if (chain.revision !== last.current.rev || last.current.frame !== traceFrame) {
+      if (wantWork) {
+        const d = tableLeaf!.worldMatrix.data
+        g.matrix.set(d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7], d[8], d[9], d[10], d[11], d[12], d[13], d[14], d[15])
+      } else {
+        g.matrix.identity()
+      }
+      g.matrixWorldNeedsUpdate = true
+      last.current.rev = chain.revision
+      last.current.frame = traceFrame
+    }
+
+    const step = useMachineStore.getState().currentStep
+    if (step !== last.current.step) {
+      const s = Math.min(Math.max(step, 0), toolPath.length - 1)
+      scene.progressGeom.setDrawRange(0, s + 1)
+      markerRef.current?.position.set(scene.src[s * 3], scene.src[s * 3 + 1], scene.src[s * 3 + 2])
+      last.current.step = step
+    }
+  })
+
+  if (!scene) return null
   return (
-    <group>
-      {/* Rapid moves - dashed orange */}
-      <line>
-        <bufferGeometry ref={rapidRef} attach="geometry" {...rapidGeom} />
-        <lineDashedMaterial color="#ff9800" dashSize={5} gapSize={3} linewidth={1} />
-      </line>
-
-      {/* Feed moves - solid cyan */}
-      <line>
-        <bufferGeometry ref={feedRef} attach="geometry" {...feedGeom} />
-        <lineBasicMaterial color="#00bcd4" linewidth={2} />
-      </line>
-
-      {/* Current position marker */}
-      {currentPos && (
-        <mesh position={currentPos}>
-          <sphereGeometry args={[2, 8, 8]} />
-          <meshStandardMaterial
-            color="#f44336"
-            emissive="#f44336"
-            emissiveIntensity={0.8}
-          />
-        </mesh>
-      )}
+    <group ref={groupRef} matrixAutoUpdate={false}>
+      <primitive object={scene.ghost} />
+      <primitive object={scene.progress} />
+      <mesh ref={markerRef}>
+        <sphereGeometry args={[2, 8, 8]} />
+        <meshStandardMaterial color="#f44336" emissive="#f44336" emissiveIntensity={0.8} />
+      </mesh>
     </group>
   )
 }

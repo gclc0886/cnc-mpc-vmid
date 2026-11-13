@@ -21,25 +21,23 @@ const ROTARY_RING = '#ffc107'
 //  ENGINE — matrix updater + node group
 // ═══════════════════════════════════════════════════════════════
 
-function MatrixUpdater({ chain }: { chain: KinematicChain }) {
-  useFrame(() => {
-    try { chain.updateMatrices() } catch { /* guard rebuild race */ }
-  }, -1)
-  return null
-}
-
-function AxisNodeGroup({ node, children }: { node: KinematicNode; children?: ReactNode }) {
+/**
+ * Mirrors one kinematic node's local matrix onto a Three group.
+ * The chain recomputes matrices whenever an axis moves (KinematicChain.updateMatrices),
+ * so this only copies — and only when `chain.revision` changed. No allocations per frame.
+ */
+function AxisNodeGroup({ chain, node, children }: { chain: KinematicChain; node: KinematicNode; children?: ReactNode }) {
   const ref = useRef<THREE.Group>(null!)
+  const lastRev = useRef(-1)
   useFrame(() => {
-    if (!ref.current) return
-    try {
-      const arr = node.localMatrix.toThreeArray()
-      // Guard against NaN matrices
-      if (arr.some((v: number) => !isFinite(v))) return
-      const m = new THREE.Matrix4()
-      m.fromArray(arr)
-      ref.current.matrix.copy(m)
-    } catch { /* axis may have been removed/rebuilt */ }
+    const g = ref.current
+    if (!g || chain.revision === lastRev.current) return
+    lastRev.current = chain.revision
+    const d = node.localMatrix.data
+    for (let i = 0; i < 16; i++) if (!Number.isFinite(d[i])) return // guard against NaN matrices
+    // THREE.Matrix4.set takes row-major arguments, same layout as Matrix4x4.data
+    g.matrix.set(d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7], d[8], d[9], d[10], d[11], d[12], d[13], d[14], d[15])
+    g.matrixWorldNeedsUpdate = true
   })
   return <group ref={ref} matrixAutoUpdate={false}>{children}</group>
 }
@@ -89,6 +87,13 @@ function SpindleWithTool({ approachVec }: { approachVec: { x: number; y: number;
 //  ROTARY AXIS — semi-transparent protractor disc with degree ticks
 //  Auto-scales to stay readable at any zoom level
 // ═══════════════════════════════════════════════════════════════
+
+let sharedProtractorTexture: THREE.CanvasTexture | null = null
+/** One 1024² canvas texture shared by all rotary discs. */
+function getProtractorTexture(): THREE.CanvasTexture {
+  if (!sharedProtractorTexture) sharedProtractorTexture = createProtractorTexture()
+  return sharedProtractorTexture
+}
 
 function createProtractorTexture(): THREE.CanvasTexture {
   const size = 1024
@@ -177,10 +182,12 @@ function createProtractorTexture(): THREE.CanvasTexture {
 const BASE_RADIUS = 80 // base radius at reference distance
 const REF_DISTANCE = 500 // camera distance where scale = 1
 
+const tmpWorldPos = new THREE.Vector3()
+
 function RotaryDisc({ vector }: { vector: { x: number; y: number; z: number } }) {
   const groupRef = useRef<THREE.Group>(null!)
   const { camera } = useThree()
-  const texture = useMemo(() => createProtractorTexture(), [])
+  const texture = useMemo(() => getProtractorTexture(), [])
 
   const vx = Math.abs(vector.x), vy = Math.abs(vector.y), vz = Math.abs(vector.z)
 
@@ -191,12 +198,11 @@ function RotaryDisc({ vector }: { vector: { x: number; y: number; z: number } })
 
   // Auto-scale based on camera distance
   useFrame(() => {
-    if (!groupRef.current) return
-    const worldPos = new THREE.Vector3()
-    groupRef.current.getWorldPosition(worldPos)
-    const dist = camera.position.distanceTo(worldPos)
-    const s = dist / REF_DISTANCE
-    groupRef.current.scale.setScalar(s)
+    const g = groupRef.current
+    if (!g) return
+    g.getWorldPosition(tmpWorldPos)
+    const s = camera.position.distanceTo(tmpWorldPos) / REF_DISTANCE
+    if (Math.abs(g.scale.x - s) > 1e-3 * s) g.scale.setScalar(s)
   })
 
   return (
@@ -277,6 +283,7 @@ function findDeepestLinearVector(node: KinematicNode): { x: number; y: number; z
 }
 
 function renderNodeTree(
+  chain: KinematicChain,
   node: KinematicNode,
   deviceType: string,
   _category: MachineCategory,
@@ -287,7 +294,7 @@ function renderNodeTree(
   const axisType = node.axis.type
 
   return (
-    <AxisNodeGroup key={node.axis.name} node={node}>
+    <AxisNodeGroup key={node.axis.id} chain={chain} node={node}>
       {/* Rotary disc indicator */}
       {axisType === 'rotary' && <RotaryDisc vector={node.axis.vector} />}
 
@@ -297,7 +304,7 @@ function renderNodeTree(
       {/* Axes at workpiece/table origin */}
       {isLeaf && deviceType === 'table' && <axesHelper args={[60]} />}
 
-      {node.children.map(child => renderNodeTree(child, deviceType, _category, depth + 1, approachVec))}
+      {node.children.map(child => renderNodeTree(chain, child, deviceType, _category, depth + 1, approachVec))}
     </AxisNodeGroup>
   )
 }
@@ -311,7 +318,6 @@ export function MachineModel({ chain }: Props) {
 
   return (
     <group>
-      <MatrixUpdater chain={chain} />
 
       {/* World origin axes */}
       <axesHelper args={[100]} />
@@ -326,7 +332,7 @@ export function MachineModel({ chain }: Props) {
             : { x: 0, y: 0, z: 1 }
           return (
             <group key={dev.id}>
-              {deviceNodes.map(rootNode => renderNodeTree(rootNode, dev.type, category, 0, approachVec))}
+              {deviceNodes.map(rootNode => renderNodeTree(chain, rootNode, dev.type, category, 0, approachVec))}
             </group>
           )
         } catch (e) {

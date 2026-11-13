@@ -6,19 +6,20 @@ import { GCodeEditor } from './components/GCodeEditor'
 import { ConfiguratorPanel } from './components/ConfiguratorPanel'
 import { PlaybackControls } from './components/PlaybackControls'
 import { parseVMID, exportVMID } from './engine/VMIDLoader'
+import { useShallow } from 'zustand/react/shallow'
 import { useMachineStore } from './store/useMachineStore'
+import { CoordDisplay } from './components/CoordDisplay'
 import { PRESET_NAMES } from './presets/machinePresets'
 import { initBridge, onConnectionChange } from './api/BridgeClient'
 
 type SideTab = 'controls' | 'configurator'
 
 function App() {
-  const {
-    chain, config, machineName, machineInfo, version,
-    gcode, toolPath, currentStep, isPlaying, stepViolations,
-    loadPreset, loadConfig, resetAxes,
-    setGcode,
-  } = useMachineStore()
+  // Only slow-changing state here: playback updates go to the panels that show them
+  const { chain, machineName, machineInfo, loadPreset, loadConfig, resetAxes } = useMachineStore(useShallow(s => ({
+    chain: s.chain, machineName: s.machineName, machineInfo: s.machineInfo,
+    loadPreset: s.loadPreset, loadConfig: s.loadConfig, resetAxes: s.resetAxes,
+  })))
 
   const [sideTab, setSideTab] = useState<SideTab>('controls')
   const [bridgeConnected, setBridgeConnected] = useState(false)
@@ -126,14 +127,6 @@ function App() {
     }
   }, [])
 
-  // Force re-read on version change
-  void version
-
-  const toolTip = chain?.getToolTipPosition() ?? [0, 0, 0]
-  // TCP expressed in the workpiece (table leaf) frame: Inv(Table) × Tool. No work offset applied yet.
-  const tcpWork = chain?.getRelativeMatrix().getTranslation() ?? [0, 0, 0]
-  const categoryBadge = chain?.machineCategory?.replace(/_/g, ' ').toUpperCase() ?? ''
-
   return (
     <div className="app-layout" style={{
       gridTemplateColumns: `1fr 6px ${sideWidth}px`,
@@ -158,64 +151,10 @@ function App() {
         </div>
 
         <ErrorBoundary>
-          <Viewport3D chain={chain} toolPath={toolPath} currentStep={currentStep} />
+          <Viewport3D chain={chain} />
         </ErrorBoundary>
 
-        <div className="coord-display">
-          {categoryBadge && <div className="category-badge">{categoryBadge}</div>}
-          <div className="mcs">
-            MCS: X={toolTip[0].toFixed(3)} Y={toolTip[1].toFixed(3)} Z={toolTip[2].toFixed(3)}
-          </div>
-          <div className="wcs" title="Tool tip in the workpiece (table) frame: Inv(Table) × Tool. Work offset (G54) not applied.">
-            WCS: X={tcpWork[0].toFixed(3)} Y={tcpWork[1].toFixed(3)} Z={tcpWork[2].toFixed(3)}
-          </div>
-          {stepViolations.length > 0 && (
-            <div className="limit-warning">
-              LIMIT: {stepViolations.map(v =>
-                `${v.axis}=${v.value.toFixed(3)} [${v.min}…${v.max}]`).join('  ')}
-            </div>
-          )}
-          {config && config.rotaryAxes.length > 0 && (
-            <div className="rotary-display">
-              {config.rotaryAxes.map(name => (
-                <span key={name} className="rotary-axis">
-                  {name}={chain?.getAxisValue(name)?.toFixed(3) ?? '0'}°
-                </span>
-              ))}
-            </div>
-          )}
-          {toolPath.length > 1 && currentStep > 0 && (() => {
-            const pt = toolPath[currentStep]
-            const prev = toolPath[Math.max(0, currentStep - 1)]
-            if (!pt || !prev) return null
-            const rotaryNames = config?.rotaryAxes ?? []
-            const axisMap: Record<string, [number, number]> = {
-              A: [prev.a, pt.a], B: [prev.b, pt.b], C: [prev.c, pt.c],
-            }
-            const angularRates: { name: string; rate: number }[] = []
-            for (const name of rotaryNames) {
-              const pair = axisMap[name]
-              if (!pair) continue
-              const delta = Math.abs(pair[1] - pair[0])
-              if (delta > 0.001 && pt.feed > 0 && !pt.rapid) {
-                angularRates.push({ name, rate: delta * pt.feed / (
-                  Math.sqrt(
-                    (pt.x - prev.x) ** 2 + (pt.y - prev.y) ** 2 + (pt.z - prev.z) ** 2 +
-                    delta ** 2
-                  ) || 1
-                ) })
-              }
-            }
-            return (
-              <div className="feed-display">
-                <span>{pt.rapid ? 'G0 Rapid' : `F${pt.feed} mm/min`}</span>
-                {angularRates.map(r => (
-                  <span key={r.name}> {r.name}̇={r.rate.toFixed(1)}°/min</span>
-                ))}
-              </div>
-            )
-          })()}
-        </div>
+        <CoordDisplay />
       </div>
 
       {/* Vertical divider */}
@@ -269,11 +208,7 @@ function App() {
 
       {/* Bottom Panel: G-Code Editor */}
       <div className="bottom-panel">
-        <GCodeEditor
-          value={gcode}
-          onChange={setGcode}
-          currentLine={toolPath[currentStep]?.blockIndex ?? 0}
-        />
+        <GCodeEditor />
       </div>
     </div>
   )

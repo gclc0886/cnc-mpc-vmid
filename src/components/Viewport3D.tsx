@@ -4,12 +4,9 @@ import { OrbitControls, Grid, GizmoHelper, GizmoViewport } from '@react-three/dr
 import { MachineModel } from '../visualization/MachineModel'
 import { ToolPathLine } from '../visualization/ToolPath'
 import type { KinematicChain, MachineCategory } from '../engine/KinematicChain'
-import type { SimPoint } from '../engine/GCodeParser'
 
 interface Props {
   chain: KinematicChain | null
-  toolPath: SimPoint[]
-  currentStep: number
 }
 
 /**
@@ -45,7 +42,7 @@ class CanvasErrorBoundary extends React.Component<{ children: React.ReactNode },
   }
 }
 
-export function Viewport3D({ chain, toolPath, currentStep }: Props) {
+export function Viewport3D({ chain }: Props) {
   const category = chain?.machineCategory ?? null
   const cncRotation = useMemo(() => getCNCRotation(category), [category])
 
@@ -75,9 +72,7 @@ export function Viewport3D({ chain, toolPath, currentStep }: Props) {
         />
 
         {chain && <MachineModel chain={chain} />}
-        {toolPath.length > 0 && (
-          <ToolPathLine points={toolPath} currentStep={currentStep} />
-        )}
+        {chain && <ToolPathLine chain={chain} />}
       </group>
 
       <OrbitControls

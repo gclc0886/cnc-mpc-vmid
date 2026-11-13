@@ -1,13 +1,8 @@
-import { useEffect, useRef, useCallback } from 'react'
-import { useMachineStore } from '../store/useMachineStore'
-
-const SPEED_OPTIONS = [
-  { label: '0.5x', value: 1 },
-  { label: '1x', value: 2 },
-  { label: '2x', value: 5 },
-  { label: '5x', value: 10 },
-  { label: '10x', value: 20 },
-]
+import { useEffect } from 'react'
+import { useShallow } from 'zustand/react/shallow'
+import { useMachineStore, PLAYBACK_SPEEDS } from '../store/useMachineStore'
+import { stepAtTime, stepOfAdjacentBlock } from '../engine/PathKinematics'
+import { useLiveVersion } from '../hooks/useLiveVersion'
 
 function formatTime(seconds: number): string {
   const s = Math.max(0, Math.round(seconds))
@@ -17,16 +12,47 @@ function formatTime(seconds: number): string {
   return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`
 }
 
-/** Jump playback to the first sample produced by a given source line (or the next one after it). */
-function jumpToLine(line: number) {
-  const { toolPath, parsedBlocks, applyStep, setIsPlaying } = useMachineStore.getState()
-  const idx = toolPath.findIndex(p => (parsedBlocks[p.blockIndex]?.line ?? 0) >= line)
-  if (idx >= 0) { setIsPlaying(false); applyStep(idx) }
+const store = () => useMachineStore.getState()
+
+/**
+ * Real-time playback loop: advances program time by frame time × speed, independent
+ * of FPS, and applies the sample at that time. Runs only while isPlaying.
+ */
+function usePlaybackLoop(isPlaying: boolean) {
+  useEffect(() => {
+    if (!isPlaying) return
+    let raf = 0
+    let lastNow = performance.now()
+    const s0 = store()
+    let time = s0.toolPath[s0.currentStep]?.t ?? 0
+
+    const frame = (now: number) => {
+      const s = store()
+      if (!s.isPlaying || s.toolPath.length === 0) return
+      const dt = Math.min((now - lastNow) / 1000, 0.25) // clamp after tab switches
+      lastNow = now
+      time += dt * s.playbackSpeed
+      const last = s.toolPath.length - 1
+      if (time >= s.toolPath[last].t) {
+        s.applyStep(last)
+        s.setIsPlaying(false)
+        return
+      }
+      const step = stepAtTime(s.toolPath, time)
+      if (step !== s.currentStep) s.applyStep(step)
+      raf = requestAnimationFrame(frame)
+    }
+    raf = requestAnimationFrame(frame)
+    return () => cancelAnimationFrame(raf)
+  }, [isPlaying])
 }
 
 function DiagnosticsList() {
-  const { diagnostics, gcodeDialect, programDuration, toolPath } = useMachineStore()
-  if (toolPath.length === 0 && diagnostics.length === 0) return null
+  const { diagnostics, gcodeDialect, programDuration, hasPath, jumpToLine } = useMachineStore(useShallow(s => ({
+    diagnostics: s.diagnostics, gcodeDialect: s.gcodeDialect, programDuration: s.programDuration,
+    hasPath: s.toolPath.length > 0, jumpToLine: s.jumpToLine,
+  })))
+  if (!hasPath && diagnostics.length === 0) return null
   const errors = diagnostics.filter(d => d.severity === 'error').length
   const warnings = diagnostics.filter(d => d.severity === 'warning').length
   const color = errors ? '#ff5252' : warnings ? '#ffb74d' : '#81c784'
@@ -56,96 +82,74 @@ function DiagnosticsList() {
   )
 }
 
+/** Step / time / line read-out and the time scrubber — throttled to ~10 Hz during playback. */
+function PlaybackStatus() {
+  useLiveVersion()
+  const { toolPath, currentStep, parsedBlocks, programDuration, isPlaying, applyStep } = store()
+  const total = toolPath.length
+  const pt = toolPath[currentStep]
+  const line = pt ? (parsedBlocks[pt.blockIndex]?.line ?? 0) : 0
+  const t = pt?.t ?? 0
+  const duration = Math.max(programDuration, 1e-6)
+  return (
+    <>
+      <div className="playback-scrub">
+        <input
+          type="range"
+          min={0}
+          max={duration}
+          step={duration / 2000}
+          value={t}
+          onChange={(e) => applyStep(stepAtTime(toolPath, parseFloat(e.target.value)))}
+          disabled={isPlaying}
+          className="playback-slider"
+          title="Program time"
+        />
+      </div>
+      <div className="playback-info">
+        <span>Time {formatTime(t)} / {formatTime(programDuration)}</span>
+        <span>Line {line}</span>
+        <span>{pt?.rapid ? 'G0' : `F${Math.round(pt?.feed ?? 0)}`}</span>
+      </div>
+      <div className="playback-info">
+        <span>Step {currentStep}/{Math.max(total - 1, 0)}</span>
+        <span>{total > 0 ? ((t / duration) * 100).toFixed(1) : '0'}%</span>
+      </div>
+    </>
+  )
+}
+
 export function PlaybackControls() {
   const {
-    toolPath, currentStep, isPlaying, playbackSpeed, config,
-    activeCombinationId, programDuration,
-    setIsPlaying, setPlaybackSpeed, applyStep, parseGcode,
-    setActiveCombination,
-  } = useMachineStore()
+    hasPath, isPlaying, playbackSpeed, config, activeCombinationId, traceFrame,
+    setIsPlaying, setPlaybackSpeed, applyStep, parseGcode, setActiveCombination, setTraceFrame,
+  } = useMachineStore(useShallow(s => ({
+    hasPath: s.toolPath.length > 0, isPlaying: s.isPlaying, playbackSpeed: s.playbackSpeed,
+    config: s.config, activeCombinationId: s.activeCombinationId, traceFrame: s.traceFrame,
+    setIsPlaying: s.setIsPlaying, setPlaybackSpeed: s.setPlaybackSpeed, applyStep: s.applyStep,
+    parseGcode: s.parseGcode, setActiveCombination: s.setActiveCombination, setTraceFrame: s.setTraceFrame,
+  })))
 
-  const animRef = useRef<number>(0)
-  const stepRef = useRef(currentStep)
-
-  // Keep stepRef in sync when currentStep changes externally
-  stepRef.current = currentStep
-
-  const totalSteps = toolPath.length
-
-  // Animation loop
-  const animate = useCallback(() => {
-    const { playbackSpeed, toolPath } = useMachineStore.getState()
-    stepRef.current += playbackSpeed
-    if (stepRef.current >= toolPath.length) {
-      stepRef.current = toolPath.length - 1
-      useMachineStore.getState().applyStep(stepRef.current)
-      useMachineStore.getState().setIsPlaying(false)
-      return
-    }
-    useMachineStore.getState().applyStep(stepRef.current)
-    animRef.current = requestAnimationFrame(animate)
-  }, [])
-
-  useEffect(() => {
-    if (isPlaying) {
-      animRef.current = requestAnimationFrame(animate)
-    }
-    return () => {
-      if (animRef.current) cancelAnimationFrame(animRef.current)
-    }
-  }, [isPlaying, animate])
+  usePlaybackLoop(isPlaying)
 
   const play = () => {
-    if (totalSteps === 0) return
-    if (currentStep >= totalSteps - 1) {
-      // Restart from beginning
-      applyStep(0)
-      stepRef.current = 0
-    }
+    const { toolPath, currentStep } = store()
+    if (toolPath.length === 0) return
+    if (currentStep >= toolPath.length - 1) applyStep(0) // restart from the beginning
     setIsPlaying(true)
   }
-
-  const pause = () => setIsPlaying(false)
-
-  const stop = () => {
+  const stop = () => { setIsPlaying(false); applyStep(0) }
+  const stepBy = (d: number) => {
+    const { toolPath, currentStep } = store()
+    if (toolPath.length === 0) return
+    applyStep(Math.min(Math.max(currentStep + d, 0), toolPath.length - 1))
+  }
+  const blockBy = (dir: 1 | -1) => {
+    const { toolPath, currentStep } = store()
+    if (toolPath.length === 0) return
     setIsPlaying(false)
-    applyStep(0)
+    applyStep(stepOfAdjacentBlock(toolPath, currentStep, dir))
   }
-
-  const stepForward = () => {
-    if (totalSteps === 0) return
-    const next = Math.min(currentStep + playbackSpeed, totalSteps - 1)
-    applyStep(next)
-  }
-
-  const stepBack = () => {
-    if (totalSteps === 0) return
-    const prev = Math.max(currentStep - playbackSpeed, 0)
-    applyStep(prev)
-  }
-
-  const jumpForward = () => {
-    if (totalSteps === 0) return
-    const next = Math.min(currentStep + playbackSpeed * 20, totalSteps - 1)
-    applyStep(next)
-  }
-
-  const jumpBack = () => {
-    if (totalSteps === 0) return
-    const prev = Math.max(currentStep - playbackSpeed * 20, 0)
-    applyStep(prev)
-  }
-
-  const onScrub = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const step = parseInt(e.target.value)
-    applyStep(step)
-  }
-
-  const pct = totalSteps > 0 ? ((currentStep / (totalSteps - 1)) * 100).toFixed(1) : '0'
-  const currentPt = toolPath[currentStep]
-  const blockLine = currentPt ? (useMachineStore.getState().parsedBlocks[currentPt.blockIndex]?.line ?? 0) : 0
-  const feedRate = currentPt?.feed ?? 0
-  const isRapid = currentPt?.rapid ?? false
 
   return (
     <div className="playback-controls">
@@ -172,96 +176,43 @@ export function PlaybackControls() {
         </div>
       )}
 
-      {totalSteps > 0 && (
+      {hasPath && (
         <>
-          {/* Scrub bar */}
-          <div className="playback-scrub">
-            <input
-              type="range"
-              min={0}
-              max={Math.max(totalSteps - 1, 0)}
-              value={currentStep}
-              onChange={onScrub}
-              disabled={isPlaying}
-              className="playback-slider"
-            />
-          </div>
+          <PlaybackStatus />
 
-          {/* Transport buttons */}
           <div className="playback-transport">
             <button onClick={stop} title="Stop (rewind)">&#9632;</button>
-            <button onClick={jumpBack} title="Jump back">&laquo;</button>
-            <button onClick={stepBack} title="Step back">&lsaquo;</button>
+            <button onClick={() => blockBy(-1)} title="Previous block">&laquo;</button>
+            <button onClick={() => stepBy(-1)} title="Previous sample">&lsaquo;</button>
             {isPlaying ? (
-              <button onClick={pause} title="Pause" className="playback-main-btn">&#10074;&#10074;</button>
+              <button onClick={() => setIsPlaying(false)} title="Pause" className="playback-main-btn">&#10074;&#10074;</button>
             ) : (
               <button onClick={play} title="Play" className="playback-main-btn">&#9654;</button>
             )}
-            <button onClick={stepForward} title="Step forward">&rsaquo;</button>
-            <button onClick={jumpForward} title="Jump forward">&raquo;</button>
+            <button onClick={() => stepBy(1)} title="Next sample">&rsaquo;</button>
+            <button onClick={() => blockBy(1)} title="Next block">&raquo;</button>
           </div>
 
-          {/* Speed selector */}
           <div className="playback-speed">
-            <span>Speed:</span>
-            {SPEED_OPTIONS.map(opt => (
-              <button
-                key={opt.value}
-                className={playbackSpeed === opt.value ? 'active' : ''}
-                onClick={() => setPlaybackSpeed(opt.value)}
-              >
-                {opt.label}
+            <span title="Multiple of real program time">Speed:</span>
+            {PLAYBACK_SPEEDS.map(v => (
+              <button key={v} className={playbackSpeed === v ? 'active' : ''} onClick={() => setPlaybackSpeed(v)}>
+                {v}×
               </button>
             ))}
           </div>
 
-          {/* Info line */}
-          <div className="playback-info">
-            <span>Step {currentStep}/{totalSteps - 1} ({pct}%)</span>
-            <span>Line {blockLine}</span>
-            <span>{isRapid ? 'G0 Rapid' : `F${Math.round(feedRate)}`}</span>
+          <div className="playback-speed">
+            <span title="Where the tool trace is drawn">Trace:</span>
+            <button className={traceFrame === 'work' ? 'active' : ''} onClick={() => setTraceFrame('work')}
+              title="On the workpiece — moves with the table (what is actually cut)">on part</button>
+            <button className={traceFrame === 'world' ? 'active' : ''} onClick={() => setTraceFrame('world')}
+              title="Tool tip in machine space">in machine</button>
           </div>
-          <div className="playback-info">
-            <span>Time {formatTime(currentPt?.t ?? 0)} / {formatTime(programDuration)}</span>
-          </div>
-          {/* Rotary angles & angular velocity */}
-          {config && config.rotaryAxes.length > 0 && currentPt && (() => {
-            const prevPt = currentStep > 0 ? toolPath[currentStep - 1] : null
-            const axisMap: Record<string, number> = { A: currentPt.a, B: currentPt.b, C: currentPt.c }
-            const prevMap: Record<string, number> = prevPt
-              ? { A: prevPt.a, B: prevPt.b, C: prevPt.c }
-              : axisMap
-            return (
-              <div className="playback-info playback-rotary">
-                {config.rotaryAxes.map(name => {
-                  const angle = axisMap[name] ?? 0
-                  const prevAngle = prevMap[name] ?? 0
-                  const delta = Math.abs(angle - prevAngle)
-                  // Approximate angular velocity: delta_deg * F / linear_dist
-                  let angVel = ''
-                  if (prevPt && delta > 0.001 && !currentPt.rapid && currentPt.feed > 0) {
-                    const linDist = Math.sqrt(
-                      (currentPt.x - prevPt.x) ** 2 +
-                      (currentPt.y - prevPt.y) ** 2 +
-                      (currentPt.z - prevPt.z) ** 2
-                    )
-                    const totalDist = Math.sqrt(linDist ** 2 + delta ** 2)
-                    const rate = totalDist > 0.001 ? (delta / totalDist) * currentPt.feed : 0
-                    angVel = ` (${rate.toFixed(1)}°/min)`
-                  }
-                  return (
-                    <span key={name}>
-                      {name}={angle.toFixed(3)}°{angVel}
-                    </span>
-                  )
-                })}
-              </div>
-            )
-          })()}
         </>
       )}
 
-      {totalSteps === 0 && (
+      {!hasPath && (
         <div className="playback-empty">Parse G-Code to enable playback</div>
       )}
 

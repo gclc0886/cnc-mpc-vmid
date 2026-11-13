@@ -18,19 +18,20 @@ describe('forward kinematics on presets', () => {
     expectVec(ch.getRelativeMatrix().getTranslation(), [0, 0, 250])
   })
 
-  it('3-axis: moving the table +X moves the tool -X relative to the workpiece', () => {
+  it('3-axis: programmed X+ moves the tool +X relative to the workpiece (table moves −X)', () => {
     const ch = chainFor('3x')
     ch.setAxisValues({ X: 10, Z: -20 })
     expectVec(ch.getToolTipPosition(), [0, 0, 180])
-    expectVec(ch.getRelativeMatrix().getTranslation(), [-10, 0, 230])
+    expectVec(ch.getDeviceLeafNode('table')!.worldMatrix.getTranslation(), [-10, 0, -50])
+    expectVec(ch.getRelativeMatrix().getTranslation(), [10, 0, 230])
   })
 
-  it('4-axis: A=90 puts the spindle on the workpiece +Y side', () => {
-    // Table leaf = T(0,0,-50)·T(0,0,-40)·Rx(90); tool at (0,0,200).
-    // In the workpiece frame the tool is 290 mm away along +Y (Rx(90) maps +Y → +Z).
+  it('4-axis: A=+90 turns the tool +90° about the workpiece X axis (+Z → −Y)', () => {
+    // Table A vector is (−1,0,0): the table turns −90° about X, so relative to the part
+    // the tool turns +90° about +X: Rx(90)·(0,0,290) = (0,−290,0).
     const ch = chainFor('4x')
     ch.setAxisValues({ A: 90 })
-    expectVec(ch.getRelativeMatrix().getTranslation(), [0, 290, 0])
+    expectVec(ch.getRelativeMatrix().getTranslation(), [0, -290, 0])
   })
 
   it('relative matrix is a proper rigid transform after rotations', () => {
@@ -54,6 +55,30 @@ describe('forward kinematics on presets', () => {
     expect(z90[0] - z0[0]).toBeCloseTo(-50, 9)
     expect(z90[2] - z0[2]).toBeCloseTo(50, 9)
   })
+})
+
+describe('ISO 841 direction convention on milling presets', () => {
+  // Positive programmed motion = tool moves positive relative to the workpiece
+  it.each(['3x', '4x', '5x_ac', '5x_bc'])('%s: X+, Y+, Z+ move the tool + in the workpiece frame', key => {
+    const ch = chainFor(key)
+    ch.updateMatrices()
+    const p0 = ch.getRelativeMatrix().getTranslation()
+    for (const [axis, i] of [['X', 0], ['Y', 1], ['Z', 2]] as const) {
+      ch.setAxisValues({ X: 0, Y: 0, Z: 0, [axis]: 5 })
+      const p = ch.getRelativeMatrix().getTranslation()
+      expect(p[i] - p0[i]).toBeCloseTo(5, 9)
+    }
+  })
+
+  it.each([['4x', 'A', 0], ['5x_ac', 'A', 0], ['5x_ac', 'C', 2]] as const)(
+    '%s: %s+ rotates the tool positively about the workpiece axis', (key, axis, k) => {
+      const ch = chainFor(key)
+      ch.setAxisValues({ [axis]: 10 })
+      // Rotation of the tool relative to the part: R = rotation block of Inv(Table)×Tool
+      const r = ch.getRelativeMatrix().data
+      const s = k === 0 ? r[9] : r[4] // sin θ for Rx (row 2, col 1) / Rz (row 1, col 0)
+      expect(s).toBeCloseTo(Math.sin(10 * Math.PI / 180), 9)
+    })
 })
 
 describe('setAxisValues', () => {

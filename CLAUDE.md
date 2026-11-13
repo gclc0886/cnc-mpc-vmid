@@ -30,7 +30,11 @@ Claude Code  <-->  MCP Server (stdio, Node.js)
   `Diagnostic`s for everything not simulated, naming the phase that adds it) → `Interpolator` (1 mm / 1° steps,
   time per sample from F, G0 per-axis `Rapid` from VMID, G93/G95). Frames, tool length, TRAORI, cycles: not yet (phases 1b–1d)
 - **VMID**: `src/engine/VMIDLoader.ts` — import/export SolidCAM VMID format (Ver 24-58), parses sub-machines, channels, access patterns
-- **3D**: `src/visualization/MachineModel.tsx` — recursive node tree, spindle+tool, protractor discs
+- **3D**: `src/visualization/MachineModel.tsx` — recursive node tree, spindle+tool, protractor discs. Node matrices are copied only when `chain.revision` changes (no per-frame allocations)
+- **Path kinematics**: `src/engine/PathKinematics.ts` — FK over every sample on a private chain → `store.pathKin` (TCP on the part `tcpWork`, in machine `tcpWorld`, limit flags + per-axis summary). Re-run by `analyzePath()` in the store on parse / machine edit / sub-machine change; limit violations become diagnostics
+- **Tool trace**: `src/visualization/ToolPath.tsx` draws `pathKin` in the table leaf frame ("on part", moves with the table) or machine frame; whole program faint, executed part bright, out-of-limit red; progress updated in `useFrame`
+- **Playback**: real time × speed (1/5/20/100/500×), `stepAtTime` binary search; panels re-render ≤10 Hz via `useLiveVersion`; editor is CodeMirror 6 (`GCodeEditor.tsx`) with exec-line decoration, diagnostics in the gutter, double-click = jump to line
+- **Presets**: table-chain axis vectors follow ISO 841 (X+ moves the table −X, table A = (−1,0,0)), see the note in `machinePresets.ts`
 
 ## Data Model
 

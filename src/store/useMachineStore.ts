@@ -5,7 +5,15 @@ import { parseProgram } from '../engine/GCodeParser'
 import type { SimPoint, GCodeBlock, Diagnostic, AxisLetter, Dialect } from '../engine/GCodeParser'
 import { buildAxisMapping, mapPointToAxes } from '../engine/AxisMapping'
 import type { AxisMapping } from '../engine/AxisMapping'
+import { computePathKinematics } from '../engine/PathKinematics'
+import type { PathKinematics } from '../engine/PathKinematics'
 import { PRESETS } from '../presets/machinePresets'
+
+/** Frame the tool trace is drawn in: on the workpiece (moves with the table) or in machine space. */
+export type TraceFrame = 'work' | 'world'
+
+/** Playback speed multipliers relative to real program time. */
+export const PLAYBACK_SPEEDS = [1, 5, 20, 100, 500] as const
 
 interface MachineStore {
   // Machine config & chain
@@ -19,15 +27,26 @@ interface MachineStore {
   gcode: string
   parsedBlocks: GCodeBlock[]
   toolPath: SimPoint[]
-  /** Interpreter messages from the last parse (unsupported words, arc errors, missing F …). */
+  /**
+   * All messages for the current program on the current machine: interpreter diagnostics,
+   * programmed axes the sub-machine can't drive, and axis limit violations along the path.
+   */
   diagnostics: Diagnostic[]
+  /** Interpreter diagnostics only (machine-independent part of `diagnostics`). */
+  parserDiagnostics: Diagnostic[]
+  /** Programmed axis letters → first line using them. */
+  usedAxes: Partial<Record<AxisLetter, number>>
+  /** Forward kinematics of the whole path on the current machine (null without a path). */
+  pathKin: PathKinematics | null
   /** Estimated program time of the last parse, seconds. */
   programDuration: number
   /** Controller dialect detected in the last parse. */
   gcodeDialect: Dialect | null
   currentStep: number
   isPlaying: boolean
-  playbackSpeed: number  // steps per frame (1=slow, 2, 5, 10, 20=fast)
+  /** Multiple of real program time (see PLAYBACK_SPEEDS). */
+  playbackSpeed: number
+  traceFrame: TraceFrame
 
   // Active combination (sub-machine) for axis mapping
   activeCombinationId: number | null
@@ -53,7 +72,10 @@ interface MachineStore {
   setIsPlaying: (playing: boolean) => void
   setToolPath: (points: SimPoint[]) => void
   setPlaybackSpeed: (speed: number) => void
+  setTraceFrame: (frame: TraceFrame) => void
   applyStep: (step: number) => void  // apply toolPath[step] to chain axes
+  /** Pause and move to the first sample at or after a 1-based source line. Returns the step, or -1. */
+  jumpToLine: (line: number) => number
 
   setActiveCombination: (id: number | null) => void
 
@@ -114,11 +136,15 @@ export const useMachineStore = create<MachineStore>((set, get) => ({
   parsedBlocks: [],
   toolPath: [],
   diagnostics: [],
+  parserDiagnostics: [],
+  usedAxes: {},
+  pathKin: null,
   programDuration: 0,
   gcodeDialect: null,
   currentStep: 0,
   isPlaying: false,
-  playbackSpeed: 2,
+  playbackSpeed: 20,
+  traceFrame: 'work',
 
   selectedNode: null,
   activeCombinationId: null,
@@ -152,9 +178,14 @@ export const useMachineStore = create<MachineStore>((set, get) => ({
       axisMapping: buildAxisMapping(config, chain, combId),
       ...(preserveState
         ? {}
-        : { toolPath: [], parsedBlocks: [], diagnostics: [], programDuration: 0, currentStep: 0, isPlaying: false, selectedNode: null, stepViolations: [] }),
+        : {
+            toolPath: [], parsedBlocks: [], diagnostics: [], parserDiagnostics: [], usedAxes: {}, pathKin: null,
+            programDuration: 0, currentStep: 0, isPlaying: false, selectedNode: null, stepViolations: [],
+          }),
       version: get().version + 1,
     })
+    // Same program on an edited machine: limits and the actual path change
+    if (preserveState) analyzePath(get, set)
   },
 
   setAxisValue: (name, value) => {
@@ -189,27 +220,18 @@ export const useMachineStore = create<MachineStore>((set, get) => ({
       }))
     }
     const res = parseProgram(gcode, { rapid })
-    const diagnostics = [...res.diagnostics]
-    // Programmed axes the active sub-machine cannot drive — their motion is silently lost otherwise
-    if (axisMapping) {
-      const driven = describeDriven(axisMapping)
-      for (const [letter, line] of Object.entries(res.usedAxes)) {
-        if (!driven.has(letter)) {
-          diagnostics.push({ line: line!, severity: 'warning', message: `${letter} is programmed but the active sub-machine has no axis mapped to it — ${letter} moves are not shown` })
-        }
-      }
-      diagnostics.sort((a, b) => (a.line || Infinity) - (b.line || Infinity))
-    }
     set({
-      parsedBlocks: res.blocks, toolPath: res.points, diagnostics, programDuration: res.duration,
-      gcodeDialect: res.dialect, currentStep: 0, isPlaying: false, stepViolations: [],
+      parsedBlocks: res.blocks, toolPath: res.points, parserDiagnostics: res.diagnostics, usedAxes: res.usedAxes,
+      programDuration: res.duration, gcodeDialect: res.dialect, currentStep: 0, isPlaying: false, stepViolations: [],
     })
+    analyzePath(get, set)
   },
 
   setCurrentStep: (step) => set({ currentStep: step }),
   setIsPlaying: (playing) => set({ isPlaying: playing }),
-  setToolPath: (points) => set({ toolPath: points }),
+  setToolPath: (points) => { set({ toolPath: points }); analyzePath(get, set) },
   setPlaybackSpeed: (speed) => set({ playbackSpeed: speed }),
+  setTraceFrame: (frame) => set({ traceFrame: frame }),
 
   applyStep: (step) => {
     const { chain, toolPath, axisMapping, stepViolations } = get()
@@ -226,12 +248,22 @@ export const useMachineStore = create<MachineStore>((set, get) => ({
     })
   },
 
+  jumpToLine: (line) => {
+    const { toolPath, parsedBlocks } = get()
+    const idx = toolPath.findIndex(p => (parsedBlocks[p.blockIndex]?.line ?? 0) >= line)
+    if (idx < 0) return -1
+    set({ isPlaying: false })
+    get().applyStep(idx)
+    return idx
+  },
+
   setActiveCombination: (id) => {
     const { config, chain } = get()
     set({
       activeCombinationId: id,
       axisMapping: config && chain ? buildAxisMapping(config, chain, id) : null,
     })
+    analyzePath(get, set)
   },
 
   setSelectedNode: (name) => set({ selectedNode: name }),
@@ -372,6 +404,40 @@ export const useMachineStore = create<MachineStore>((set, get) => ({
     if (config) get().loadConfig(config, true)
   },
 }))
+
+type StoreGet = () => MachineStore
+type StoreSet = (partial: Partial<MachineStore>) => void
+
+/**
+ * Machine-dependent analysis of the current program: forward kinematics of the
+ * whole path (trace on the workpiece, limit violations) and the diagnostics that
+ * depend on the machine. Re-run when the program, the machine or the sub-machine changes.
+ */
+function analyzePath(get: StoreGet, set: StoreSet) {
+  const { config, axisMapping, toolPath, parsedBlocks, parserDiagnostics, usedAxes } = get()
+  const diagnostics = [...parserDiagnostics]
+  let pathKin: PathKinematics | null = null
+
+  if (config && axisMapping && toolPath.length > 0) {
+    // Programmed axes the active sub-machine cannot drive — their motion is silently lost otherwise
+    const driven = describeDriven(axisMapping)
+    for (const [letter, line] of Object.entries(usedAxes)) {
+      if (!driven.has(letter)) {
+        diagnostics.push({ line: line!, severity: 'warning', message: `${letter} is programmed but the active sub-machine has no axis mapped to it — ${letter} moves are not shown` })
+      }
+    }
+    pathKin = computePathKinematics(config, axisMapping, toolPath)
+    for (const s of pathKin.limits) {
+      diagnostics.push({
+        line: parsedBlocks[toolPath[s.firstStep].blockIndex]?.line ?? 0,
+        severity: 'error',
+        message: `${s.axis} out of limits [${s.min} … ${s.max}]: reaches ${s.worst.toFixed(3)} (${s.count} sample${s.count > 1 ? 's' : ''}) — first here`,
+      })
+    }
+  }
+  diagnostics.sort((a, b) => (a.line || Infinity) - (b.line || Infinity))
+  set({ pathKin, diagnostics })
+}
 
 /** Programmed letters that the mapping drives. */
 function describeDriven(m: AxisMapping): Set<string> {

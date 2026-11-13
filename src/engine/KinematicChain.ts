@@ -118,6 +118,8 @@ export class KinematicChain {
   /** Same nodes keyed by VMID axis ID (combinations reference axes by ID). */
   nodesById: Map<number, KinematicNode> = new Map()
   deviceNodes: Map<number, KinematicNode[]> = new Map()
+  /** Incremented on every matrix update — lets renderers skip unchanged frames. */
+  revision = 0
 
   /** Determine machine category from config for visualization. */
   get machineCategory(): MachineCategory {
@@ -285,6 +287,7 @@ export class KinematicChain {
         this._updateNodeRecursive(root, Matrix4x4.identity())
       }
     }
+    this.revision++
   }
 
   private _updateNodeRecursive(node: KinematicNode, parentWorld: Matrix4x4) {

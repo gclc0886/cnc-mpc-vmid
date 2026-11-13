@@ -1,6 +1,7 @@
 import { useRef, useCallback } from 'react'
 import { useMachineStore } from '../store/useMachineStore'
 import { checkAxisLimit } from '../engine/KinematicChain'
+import { useLiveVersion } from '../hooks/useLiveVersion'
 
 function useRepeatAction() {
   const timer = useRef<number>(0)
@@ -49,8 +50,10 @@ function StepButton({ label, action }: { label: string; action: () => void }) {
 }
 
 export function AxisControls() {
-  const { chain, version, setAxisValue, resetAxes } = useMachineStore()
-  void version
+  const chain = useMachineStore(s => s.chain)
+  const setAxisValue = useMachineStore(s => s.setAxisValue)
+  const resetAxes = useMachineStore(s => s.resetAxes)
+  useLiveVersion()
 
   if (!chain) return null
 

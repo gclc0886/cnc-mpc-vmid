@@ -1,5 +1,13 @@
 import type { KinematicConfig } from '../engine/KinematicChain'
 
+/*
+ * Axis direction convention (ISO 841, also how SolidCAM VMIDs are built):
+ * a positive programmed move moves the TOOL in the positive direction relative to
+ * the workpiece. Axes on the table chain therefore have physical vectors opposite to
+ * the programmed direction (X+ moves the table to −X), e.g. table A = (−1, 0, 0)
+ * as in a real DMC635 VMID. Spindle-chain axes use the programmed direction.
+ */
+
 /** 3-Axis Mill: Base → Z → Tool | Base → X → Y → Workpiece */
 export const PRESET_3X: KinematicConfig = {
   name: '3-Axis Mill',
@@ -23,13 +31,13 @@ export const PRESET_3X: KinematicConfig = {
       id: 2, name: 'Table', type: 'table', maxSpin: 0,
       axes: [{
         name: 'X', id: 1, type: 'linear',
-        vector: { x: 1, y: 0, z: 0 },
+        vector: { x: -1, y: 0, z: 0 },
         offset: { x: 0, y: 0, z: 0 },
         homeRef: 0,
         limits: { min: -300, max: 300 },
         children: [{
           name: 'Y', id: 2, type: 'linear',
-          vector: { x: 0, y: 1, z: 0 },
+          vector: { x: 0, y: -1, z: 0 },
           offset: { x: 0, y: 0, z: -50 },
           homeRef: 0,
           limits: { min: -200, max: 200 },
@@ -68,19 +76,19 @@ export const PRESET_4X: KinematicConfig = {
       id: 2, name: 'Table', type: 'table', maxSpin: 0,
       axes: [{
         name: 'X', id: 1, type: 'linear',
-        vector: { x: 1, y: 0, z: 0 },
+        vector: { x: -1, y: 0, z: 0 },
         offset: { x: 0, y: 0, z: 0 },
         homeRef: 0,
         limits: { min: -300, max: 300 },
         children: [{
           name: 'Y', id: 2, type: 'linear',
-          vector: { x: 0, y: 1, z: 0 },
+          vector: { x: 0, y: -1, z: 0 },
           offset: { x: 0, y: 0, z: -50 },
           homeRef: 0,
           limits: { min: -200, max: 200 },
           children: [{
             name: 'A', id: 4, type: 'rotary',
-            vector: { x: 1, y: 0, z: 0 },
+            vector: { x: -1, y: 0, z: 0 },
             offset: { x: 0, y: 0, z: -40 },
             homeRef: 0,
             limits: { min: -360, max: 360 },
@@ -120,25 +128,25 @@ export const PRESET_5X_TRUNNION: KinematicConfig = {
       id: 2, name: 'Table', type: 'table', maxSpin: 0,
       axes: [{
         name: 'X', id: 1, type: 'linear',
-        vector: { x: 1, y: 0, z: 0 },
+        vector: { x: -1, y: 0, z: 0 },
         offset: { x: 0, y: 0, z: 0 },
         homeRef: 0,
         limits: { min: -400, max: 400 },
         children: [{
           name: 'Y', id: 2, type: 'linear',
-          vector: { x: 0, y: 1, z: 0 },
+          vector: { x: 0, y: -1, z: 0 },
           offset: { x: 0, y: 0, z: -50 },
           homeRef: 0,
           limits: { min: -300, max: 300 },
           children: [{
             name: 'A', id: 4, type: 'rotary',
-            vector: { x: 1, y: 0, z: 0 },
+            vector: { x: -1, y: 0, z: 0 },
             offset: { x: 0, y: 0, z: -40 },
             homeRef: 0,
             limits: { min: -120, max: 120 },
             children: [{
               name: 'C', id: 5, type: 'rotary',
-              vector: { x: 0, y: 0, z: 1 },
+              vector: { x: 0, y: 0, z: -1 },
               offset: { x: 0, y: 0, z: -40 },
               homeRef: 0,
               limits: { min: -360, max: 360 },
