@@ -137,7 +137,9 @@ endp
 | tool on +Z (`zpos > 0` at clearance) | `ypos` | `zpos` | `-angle` | as is |
 | tool on −Z (`zpos < 0` at clearance) | `-ypos` | `-zpos` | `180 - angle` | swapped (Y mirrored) |
 
-A sign verified against VMID kinematics (A about +X); both rows give increasing A, consistent with `Positive4xDirOnly="1"`.
+A sign verified against VMID kinematics (A about +X); flipped row also verified numerically from the `;DBG` dump, normal row derived (not yet dumped).
+
+**A range (non-modulo axis, DMC635):** indexing outputs the absolute face angle normalized to 0…360, no accumulation (so the table may run back almost a full turn, e.g. `A348 → A0`); wrapping accumulates via `dapos` up to the 3600 limit. The axis counter lives in the control: a post can't "reset" it without motion except with `PRESETON` (rejected by the user).
 
 **Fix pattern (retract + A deferred to the first move of the face):**
 ```gppl
@@ -148,7 +150,6 @@ A sign verified against VMID kinematics (A about +X); both rows give increasing 
 ; @calc_clean_4axis, before the angle unwrap
   if rot_pending then
     rot_pending = false
-    do_rotate = true
     if zpos < 0 then
       flip_yz = true
       fourth_axis = 180 - face_angle
@@ -156,14 +157,20 @@ A sign verified against VMID kinematics (A about +X); both rows give increasing 
       flip_yz = false
       fourth_axis = 0 - face_angle
     endif
-  endif
-  ; ... unwrap into global_a_pos ...
-  if do_rotate then
+    while fourth_axis < 0
+      fourth_axis = fourth_axis + 360
+    endw
+    while fourth_axis >= 359.9995
+      fourth_axis = fourth_axis - 360
+    endw
+    delta_a = fourth_axis - global_a_pos
     if !a_output or delta_a > 0.0001 or delta_a < -0.0001 then
       {nb, 'G0 Z'ztool}
-      {nb, 'G0 A'global_a_pos}
+      {nb, 'G0 A'fourth_axis}
       a_output = true
     endif
+    global_a_pos = fourth_axis
+    global_a_prev = fourth_axis
   endif
   ; indexing coords
   if flip_yz then
@@ -176,7 +183,7 @@ A sign verified against VMID kinematics (A about +X); both rows give increasing 
 ```
 `@arc` must call `@calc_clean_4axis` and output `y_calc/z_calc` too (shared `change()` tracking with `@line`), reverse G2/G3 in XY/ZX when `flip_yz` (YZ: both axes flip = rotation, direction kept), and negate J for thread arcs. `@compensation`: swap G41/G42 when `flip_yz`.
 
-Results: rotor (−Z side) `G0 A12` → `G0 X-6 Z90` → `G1 Z48.493` → `G1 X25`, A 12…360; hex (+Z side) `G0 A0` → `X25.924 Y1.2 Z50` → helix down to Z≈9.9, A 0→60→…→300.
+Results: rotor (−Z side) `G0 A12` → `G0 X-6 Z90` → `G1 Z48.493` → `G1 X25`, A 12…348, 0; hex (+Z side) `G0 A0` → `X25.924 Y1.2 Z50` → helix down to Z≈9.9, A 0→60→…→300.
 
 **Do NOT** output `yhpos/zhpos` here — they are part coordinates at A=0, so Y appears and the plunge becomes a tilted Y+Z line.
 
@@ -451,7 +458,8 @@ Load the VMID in CNC-Trainer (MCP): put the tool at the top (`Z=50`), set `A`, r
 - [ ] Cycle Z values (RTP/RFP/DP) computed before the face side is known
 - [ ] CYCLE83 parameters not in 840D order
 - [ ] `change(var) = true` set before a later assignment of the same value (flag lost)
-- [ ] A sequence direction contradicts `Positive4xDirOnly` in VMID
+- [ ] Indexed A accumulating across tools (A372, A720…) instead of absolute 0…360
+- [ ] Wrapping A sign/start never checked against kinematics (indexing needed `A = -angle`; wrapping uses `+Σdapos` — verify with a dump)
 - [ ] No safe Z retract before A rotation
 - [ ] Outputting A in every block (should be only on face change)
 - [ ] Spurious A-0, A-360 commands
