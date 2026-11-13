@@ -1,8 +1,10 @@
 import { create } from 'zustand'
 import { KinematicChain } from '../engine/KinematicChain'
-import type { KinematicConfig, AxisDef } from '../engine/KinematicChain'
+import type { KinematicConfig, AxisDef, LimitViolation } from '../engine/KinematicChain'
 import { GCodeParser } from '../engine/GCodeParser'
 import type { SimPoint, GCodeBlock } from '../engine/GCodeParser'
+import { buildAxisMapping, mapPointToAxes } from '../engine/AxisMapping'
+import type { AxisMapping } from '../engine/AxisMapping'
 import { PRESETS } from '../presets/machinePresets'
 
 interface MachineStore {
@@ -23,6 +25,10 @@ interface MachineStore {
 
   // Active combination (sub-machine) for axis mapping
   activeCombinationId: number | null
+  /** Programmed X/Y/Z/A/B/C → physical axis names, resolved from the active combination. */
+  axisMapping: AxisMapping | null
+  /** Axes outside their limits at the current playback step (empty when none). */
+  stepViolations: LimitViolation[]
 
   // Configurator
   selectedNode: string | null
@@ -107,6 +113,8 @@ export const useMachineStore = create<MachineStore>((set, get) => ({
 
   selectedNode: null,
   activeCombinationId: null,
+  axisMapping: null,
+  stepViolations: [],
 
   loadPreset: (key) => {
     const config = PRESETS[key]
@@ -116,23 +124,26 @@ export const useMachineStore = create<MachineStore>((set, get) => ({
   loadConfig: (config, preserveState = false) => {
     const prev = get()
     const chain = new KinematicChain(config)
-    // Restore axis positions from previous chain if preserving state
+    // Restore axis positions from previous chain if preserving state.
+    // No clamping: a simulated out-of-limit position must survive a config edit.
     if (preserveState && prev.chain) {
-      const oldPositions = prev.chain.getAllPositions()
-      for (const [name, value] of Object.entries(oldPositions)) {
-        try { chain.setAxisValue(name, value) } catch { /* axis may not exist anymore */ }
-      }
+      chain.setAxisValues(prev.chain.getAllPositions(), false)
     }
     chain.updateMatrices()
-    // Auto-select first combination if available
-    const firstCombId = config.combinations?.length > 0 ? config.combinations[0].id : null
+    // Keep the selected combination across edits if it still exists, else pick the first one
+    const combos = config.combinations ?? []
+    const keepComb = preserveState && combos.some(c => c.id === prev.activeCombinationId)
+    const combId = keepComb ? prev.activeCombinationId : (combos.length > 0 ? combos[0].id : null)
     set({
       config,
       chain,
       machineName: config.name,
       machineInfo: buildInfoString(config),
-      activeCombinationId: firstCombId,
-      ...(preserveState ? {} : { toolPath: [], currentStep: 0, isPlaying: false, selectedNode: null }),
+      activeCombinationId: combId,
+      axisMapping: buildAxisMapping(config, chain, combId),
+      ...(preserveState
+        ? {}
+        : { toolPath: [], parsedBlocks: [], currentStep: 0, isPlaying: false, selectedNode: null, stepViolations: [] }),
       version: get().version + 1,
     })
   },
@@ -147,10 +158,10 @@ export const useMachineStore = create<MachineStore>((set, get) => ({
   resetAxes: () => {
     const { chain } = get()
     if (!chain) return
-    for (const [name] of chain.nodes) {
-      chain.setAxisValue(name, 0)
-    }
-    set({ version: get().version + 1 })
+    const zeros: Record<string, number> = {}
+    for (const name of chain.nodes.keys()) zeros[name] = 0
+    chain.setAxisValues(zeros)
+    set({ version: get().version + 1, stepViolations: [] })
   },
 
   bumpVersion: () => set({ version: get().version + 1 }),
@@ -162,7 +173,7 @@ export const useMachineStore = create<MachineStore>((set, get) => ({
     const parser = new GCodeParser()
     parser.parse(gcode)
     const points = parser.interpolate(1.0)
-    set({ parsedBlocks: parser.blocks, toolPath: points, currentStep: 0, isPlaying: false })
+    set({ parsedBlocks: parser.blocks, toolPath: points, currentStep: 0, isPlaying: false, stepViolations: [] })
   },
 
   setCurrentStep: (step) => set({ currentStep: step }),
@@ -171,48 +182,27 @@ export const useMachineStore = create<MachineStore>((set, get) => ({
   setPlaybackSpeed: (speed) => set({ playbackSpeed: speed }),
 
   applyStep: (step) => {
-    const { chain, toolPath, config, activeCombinationId } = get()
-    if (!chain || step < 0 || step >= toolPath.length) return
-    const pt = toolPath[step]
-
-    // Build axis mapping from active combination's axesOrder
-    // axesOrder.linear = [axisId1, axisId2, axisId3] → maps to G-code X, Y, Z
-    // axesOrder.rotary = [axisId4, axisId5, axisId6] → maps to G-code A, B, C
-    const combination = config?.combinations?.find(c => c.id === activeCombinationId)
-
-    if (combination) {
-      // Build axis ID → name lookup from all devices
-      const idToName = buildAxisIdMap(config!)
-      const linIds = combination.axesOrder.linear  // [L1_id, L2_id, L3_id]
-      const rotIds = combination.axesOrder.rotary  // [R1_id, R2_id, R3_id]
-
-      // G-code X → first linear axis, Y → second, Z → third
-      const gcodeLinear = [pt.x, pt.y, pt.z]
-      for (let i = 0; i < linIds.length && i < 3; i++) {
-        const axisName = idToName.get(linIds[i])
-        if (axisName) chain.setAxisValue(axisName, gcodeLinear[i])
-      }
-
-      // G-code A → first rotary axis, B → second, C → third
-      const gcodeRotary = [pt.a, pt.b, pt.c]
-      for (let i = 0; i < rotIds.length && i < 3; i++) {
-        const axisName = idToName.get(rotIds[i])
-        if (axisName) chain.setAxisValue(axisName, gcodeRotary[i])
-      }
-    } else {
-      // Fallback: direct name mapping (legacy behavior)
-      const axisMap: Record<string, number> = {
-        'X': pt.x, 'Y': pt.y, 'Z': pt.z,
-        'A': pt.a, 'B': pt.b, 'C': pt.c,
-      }
-      for (const [name] of chain.nodes) {
-        if (name in axisMap) chain.setAxisValue(name, axisMap[name])
-      }
-    }
-    set({ currentStep: step, version: get().version + 1 })
+    const { chain, toolPath, axisMapping, stepViolations } = get()
+    if (!chain || !axisMapping || step < 0 || step >= toolPath.length) return
+    // Mapping is pre-resolved (combination axis IDs → names); one matrix update per step.
+    // Simulation never clamps — out-of-limit moves are reported, not hidden.
+    const violations = chain.setAxisValues(mapPointToAxes(toolPath[step], axisMapping), false)
+    // Keep the same empty array while in limits, so selectors don't see a new value every frame
+    const changed = violations.length > 0 || stepViolations.length > 0
+    set({
+      currentStep: step,
+      version: get().version + 1,
+      ...(changed ? { stepViolations: violations } : {}),
+    })
   },
 
-  setActiveCombination: (id) => set({ activeCombinationId: id }),
+  setActiveCombination: (id) => {
+    const { config, chain } = get()
+    set({
+      activeCombinationId: id,
+      axisMapping: config && chain ? buildAxisMapping(config, chain, id) : null,
+    })
+  },
 
   setSelectedNode: (name) => set({ selectedNode: name }),
 
@@ -377,19 +367,6 @@ function collectAxisNames(config: KinematicConfig): { linear: string[]; rotary: 
   }
   for (const dev of config.devices) collect(dev.axes)
   return { linear, rotary }
-}
-
-/** Build axis ID → axis name map from config devices. */
-function buildAxisIdMap(config: KinematicConfig): Map<number, string> {
-  const map = new Map<number, string>()
-  const collect = (axes: AxisDef[]) => {
-    for (const a of axes) {
-      map.set(a.id, a.name)
-      if (a.children) collect(a.children)
-    }
-  }
-  for (const dev of config.devices) collect(dev.axes)
-  return map
 }
 
 export { DEFAULT_GCODE }

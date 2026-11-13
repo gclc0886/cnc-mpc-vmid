@@ -15,7 +15,7 @@ type SideTab = 'controls' | 'configurator'
 function App() {
   const {
     chain, config, machineName, machineInfo, version,
-    gcode, toolPath, currentStep, isPlaying,
+    gcode, toolPath, currentStep, isPlaying, stepViolations,
     loadPreset, loadConfig, resetAxes,
     setGcode,
   } = useMachineStore()
@@ -130,6 +130,8 @@ function App() {
   void version
 
   const toolTip = chain?.getToolTipPosition() ?? [0, 0, 0]
+  // TCP expressed in the workpiece (table leaf) frame: Inv(Table) × Tool. No work offset applied yet.
+  const tcpWork = chain?.getRelativeMatrix().getTranslation() ?? [0, 0, 0]
   const categoryBadge = chain?.machineCategory?.replace(/_/g, ' ').toUpperCase() ?? ''
 
   return (
@@ -164,11 +166,15 @@ function App() {
           <div className="mcs">
             MCS: X={toolTip[0].toFixed(3)} Y={toolTip[1].toFixed(3)} Z={toolTip[2].toFixed(3)}
           </div>
-          <div className="wcs">
-            WCS: X={chain?.getAxisValue('X')?.toFixed(3) ?? '0'}{' '}
-            Y={chain?.getAxisValue('Y')?.toFixed(3) ?? '0'}{' '}
-            Z={chain?.getAxisValue('Z')?.toFixed(3) ?? '0'}
+          <div className="wcs" title="Tool tip in the workpiece (table) frame: Inv(Table) × Tool. Work offset (G54) not applied.">
+            WCS: X={tcpWork[0].toFixed(3)} Y={tcpWork[1].toFixed(3)} Z={tcpWork[2].toFixed(3)}
           </div>
+          {stepViolations.length > 0 && (
+            <div className="limit-warning">
+              LIMIT: {stepViolations.map(v =>
+                `${v.axis}=${v.value.toFixed(3)} [${v.min}…${v.max}]`).join('  ')}
+            </div>
+          )}
           {config && config.rotaryAxes.length > 0 && (
             <div className="rotary-display">
               {config.rotaryAxes.map(name => (

@@ -96,7 +96,7 @@ export function PlaybackControls() {
 
   const pct = totalSteps > 0 ? ((currentStep / (totalSteps - 1)) * 100).toFixed(1) : '0'
   const currentPt = toolPath[currentStep]
-  const blockLine = currentPt?.blockIndex ?? 0
+  const blockLine = currentPt ? (useMachineStore.getState().parsedBlocks[currentPt.blockIndex]?.line ?? 0) : 0
   const feedRate = currentPt?.feed ?? 0
   const isRapid = currentPt?.rapid ?? false
 

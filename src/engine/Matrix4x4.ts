@@ -149,20 +149,19 @@ export class Matrix4x4 {
 
   /**
    * Inverse for rigid-body transforms (rotation + translation).
-   * Uses: inv = [R^T | -R^T * t]
+   * inv = [ Rᵀ | -Rᵀ·t ]
    */
   inverse(): Matrix4x4 {
     const d = this.data
-    // R^T (transpose of 3x3 rotation submatrix)
-    const r00 = d[0], r01 = d[4], r02 = d[8]
-    const r10 = d[1], r11 = d[5], r12 = d[9]
-    const r20 = d[2], r21 = d[6], r22 = d[10]
-    // Translation
+    // Rotation R, row-major: R[i][j] = d[i*4 + j]
+    const r00 = d[0], r01 = d[1], r02 = d[2]
+    const r10 = d[4], r11 = d[5], r12 = d[6]
+    const r20 = d[8], r21 = d[9], r22 = d[10]
     const tx = d[3], ty = d[7], tz = d[11]
-    // -R^T * t
-    const itx = -(r00 * tx + r01 * ty + r02 * tz)
-    const ity = -(r10 * tx + r11 * ty + r12 * tz)
-    const itz = -(r20 * tx + r21 * ty + r22 * tz)
+    // -Rᵀ·t  (row i of Rᵀ is column i of R)
+    const itx = -(r00 * tx + r10 * ty + r20 * tz)
+    const ity = -(r01 * tx + r11 * ty + r21 * tz)
+    const itz = -(r02 * tx + r12 * ty + r22 * tz)
     return new Matrix4x4([
       r00, r10, r20, itx,
       r01, r11, r21, ity,
