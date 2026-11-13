@@ -20,7 +20,7 @@ Claude Code  <-->  MCP Server (stdio, Node.js)
                   Zustand Store <-> KinematicChain Engine
 ```
 
-- **MCP Server**: `mcp-server/cnc-trainer-mcp.ts` — 21 tools, WebSocket relay
+- **MCP Server**: `mcp-server/cnc-trainer-mcp.ts` — 24 tools, WebSocket relay; method/param/result contract in `src/api/bridge-types.ts` (shared, type-checked on both sides)
 - **Bridge Client**: `src/api/BridgeClient.ts` — browser-side WS client, dispatches commands to Zustand store
 - **Store**: `src/store/useMachineStore.ts` — central state (config, chain, toolPath, playback, activeCombination)
 - **Engine**: `src/engine/KinematicChain.ts` — forward kinematics, matrix math, types for Combinations/Channels/AccessPatterns
@@ -129,30 +129,36 @@ The VMID loader (`VMIDLoader.ts`) handles SolidCAM Virtual Machine ID format:
 ### Reading state (non-destructive, call freely)
 | Tool | Returns |
 |------|---------|
-| `get_machine_state` | Name, category, all positions, TCP coords, playback status |
+| `get_machine_state` | Name, category, all positions, TCP (MCS/WCS), limit violations, active combination, playback status |
 | `get_axis_positions` | `{ "X": 50.0, "Y": 30.0, "Z": -10.0, "A": 45.0 }` |
-| `get_tool_position` | TCP in MCS and WCS coordinates |
+| `get_tool_position` | TCP in MCS (world) and WCS (table leaf frame = Inv(Table)×Tool, no G54 yet) |
 | `get_matrices` | All 4x4 transformation matrices (world + relative) |
 | `get_config` | Full KinematicConfig JSON (includes combinations, channels, accessPatterns) |
 | `get_animation_state` | currentStep, totalSteps, isPlaying |
+| `get_step_info` | `step?` — source line, programmed X..C, mapped physical axes, limit violations; TCP only for the current step. Does not move the machine |
+| `capture_screenshot` | `width?` — JPEG of the app window (Electron only) |
 
 ### Machine control
 | Tool | Params | Effect |
 |------|--------|--------|
 | `load_preset` | `key`: 3x, 4x, 5x_ac, 5x_bc, turn_mill | Loads built-in preset |
 | `load_vmid` | `xml`: VMID XML string | Loads machine from VMID |
-| `set_axis_value` | `name`, `value` | Move single axis (mm/deg) |
-| `set_axes` | `axes`: {name: value, ...} | Move multiple axes at once |
+| `load_vmid_file` | `path` | Reads a .vmid from disk (ISO-8859-1/UTF-8) and loads it |
+| `set_axis_value` | `name`, `value` | Jog single axis (clamped to limits; unknown name → error) |
+| `set_axes` | `axes`: {name: value, ...} | Jog several axes, one matrix update |
 | `reset_axes` | — | Zero all axes |
 
 ### G-code & animation
 | Tool | Params | Effect |
 |------|--------|--------|
 | `load_gcode` | `gcode`: string | Load G-code into editor |
-| `parse_gcode` | — | Parse & generate toolpath |
+| `load_gcode_file` | `path`, `parse?` | Read a program from disk (UTF-8/Windows-1251), parse by default |
+| `parse_gcode` | — | Parse & generate toolpath → `{totalSteps, blocks}` |
 | `play_animation` | — | Start playback |
 | `pause_animation` | — | Pause playback |
-| `set_animation_step` | `step`: int | Jump to step |
+| `set_animation_step` | `step`: int | Pause, move the machine to the step, return the same info as `get_step_info` + TCP |
+
+**Limits:** jogging clamps; G-code simulation never clamps — out-of-limit values are applied and reported (`limitViolations`, red LIMIT badge in the viewport).
 
 ### Configuration editing
 | Tool | Params | Effect |
@@ -174,20 +180,19 @@ get_tool_position        # TCP in MCS/WCS
 
 ### Load and test a VMID file
 ```
-# Read file content, then:
-load_vmid(xml=content)
+load_vmid_file(path="C:\\POSTs\\DMC635_SIN\\DMC635_SIN-4X.vmid")
 get_machine_state()
-set_axis_value(name="B", value=45)
+set_axis_value(name="A", value=45)
 get_tool_position()
 ```
 
-### Run G-code simulation
+### Check a postprocessor output
 ```
-load_gcode(gcode="G0 X0 Y0 Z50\nG1 X100 F1000\n...")
-parse_gcode()                    # returns totalSteps
-play_animation()                 # or step through:
-set_animation_step(step=100)
-get_animation_state()
+load_vmid_file(path=...)
+load_gcode_file(path=".../program.mpf")   # parses → totalSteps
+get_step_info(step=N)                      # inspect any step without moving
+set_animation_step(step=N)                 # move there, get TCP
+capture_screenshot()                       # look at it
 ```
 
 ### Build a machine from scratch
@@ -206,14 +211,21 @@ add_device(device={name:"Spindle X", type:"spindle", axes:[{name:"W", type:"line
 - **Axis hierarchy**: nested parent→child, each device has its own root axes
 - **deviceId**: numeric ID from config (typically 1=Spindle, 2=Table, but check `get_config`)
 - **blockIndex in SimPoint**: maps to `parsedBlocks[blockIndex].line` for source G-code line number
-- **Combination axesOrder**: axis IDs (not names!) — resolved via `buildAxisIdMap()` in store
+- **Combination axesOrder**: axis IDs (not names!) — resolved once into `axisMapping` (`src/engine/AxisMapping.ts`) on load / sub-machine change
 - **Channels**: independent groups — each channel has its own sub-machines and axis budget
 - **Access patterns**: axis exchange modes — `normal` (own channel), `forbidden` (disabled), `exchange` (borrowed from other channel)
 
 ## Troubleshooting
 
 - **"CNC Trainer not connected"**: App not running or WS not connected. Start app first.
-- **Port 3100 in use**: Kill old process: `netstat -ano | findstr 3100` → `taskkill /PID <pid> /F`
+- **Port 3100 in use**: a newer MCP server asks the current owner to release the port ("takeover", latest session wins) and servers exit when Claude Code closes stdio. A server from before this change won't respond — the tool error says so; then `netstat -ano | findstr :3100` → `taskkill /PID <pid> /F` (the new server reconnects by itself every 5 s).
+- **Second app instance / testing**: `CNC_BRIDGE_PORT=3101 npm start` + MCP server with the same env var.
+
+## Tests
+
+- `npm test` — unit tests (Vitest), `npm run typecheck` — app types, `npx tsc -p mcp-server/tsconfig.json` — MCP server types.
+- `CNC_VMID_CORPUS=C:\POSTs npm test` — also parses every real VMID in that folder and prints a summary of known loader gaps. VMIDs stay out of the repo.
+- Roadmap and known defects: `docs/UPGRADE_PLAN.md`.
 - **App crashes on add_axis**: Check that `vector` uses `{x,y,z}` format, not array `[x,y,z]`
 - **Machine disappears after config edit**: Fixed — `loadConfig(config, true)` preserves state
 - **Protractor labels too small**: Font size in `createProtractorTexture()` in MachineModel.tsx

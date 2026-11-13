@@ -2,7 +2,7 @@ import type { KinematicConfig, AxisDef, DeviceDef, ChannelDef, AccessPatternDef 
 
 /**
  * Parse VMID XML string into KinematicConfig.
- * Handles both Ver 30 (Components/Axis) and Ver 24 (SubDevices/Axes) formats.
+ * Handles both the Components/Axis layout (Ver 26+) and the older SubDevices/Axes layout (Ver 24).
  */
 export function parseVMID(xmlString: string): KinematicConfig {
   const parser = new DOMParser()
@@ -13,7 +13,12 @@ export function parseVMID(xmlString: string): KinematicConfig {
   const version = parseInt(root.getAttribute('Ver') || '24')
   const operationType = parseInt(root.getAttribute('OperationType') || '0')
 
-  const isV30 = version >= 30
+  // Detect the layout by structure, not by version number: SolidCAM switched to the
+  // <Components> axis tree before Ver 30 (Ver 26/29 files use it too), while older
+  // files keep <SubDevices>. Version is only the tie-breaker when neither is present.
+  const hasComponents = root.querySelector(':scope > Components') !== null
+  const hasSubDevices = root.querySelector(':scope > SubDevices') !== null
+  const isV30 = hasComponents || (!hasSubDevices && version >= 30)
 
   const config: KinematicConfig = {
     name,
@@ -42,6 +47,10 @@ export function parseVMID(xmlString: string): KinematicConfig {
 
   // Count axes
   const allAxes = flattenAllAxes(config)
+  if (allAxes.length === 0) {
+    // Better to fail loudly than to load an empty machine that "works"
+    throw new Error(`VMID "${name}" (Ver ${version}): no axes found — unsupported layout`)
+  }
   config.axisCount = allAxes.length
   config.linearAxes = allAxes.filter(a => a.type === 'linear').map(a => a.name)
   config.rotaryAxes = allAxes.filter(a => a.type === 'rotary').map(a => a.name)
@@ -66,8 +75,8 @@ export function parseVMID(xmlString: string): KinematicConfig {
     const linear: number[] = []
     const rotary: number[] = []
 
-    if (isV30 && ao) {
-      // Ver 30: AxisOrder children
+    if (ao && ao.querySelector('AxisOrder')) {
+      // Components layout: AxisOrder children
       ao.querySelectorAll('AxisOrder').forEach((item, idx) => {
         const aid = parseInt(item.getAttribute('AxisId') || '-1')
         if (aid >= 0) {
@@ -210,7 +219,7 @@ function parseV30Devices(root: Element, config: KinematicConfig) {
     })
   } else {
     // Fallback: check for top-level Device[Type="1"] (no axes on table)
-    const tableDevs = root.querySelectorAll(':scope > Device[Type="1"]')
+    const tableDevs = root.querySelectorAll(':scope > Device[Type="1"], :scope > Components > Device[Type="1"]')
     if (tableDevs.length === 0) {
       // No table device found at all — create a static one
       config.devices.push({

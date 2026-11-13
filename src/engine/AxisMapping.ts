@@ -1,0 +1,62 @@
+import type { KinematicChain, KinematicConfig } from './KinematicChain'
+import type { SimPoint } from './GCodeParser'
+
+/**
+ * Which physical axis receives each programmed coordinate.
+ * linear[0..2] ← G-code X/Y/Z, rotary[0..2] ← G-code A/B/C. null = not driven.
+ */
+export interface AxisMapping {
+  linear: (string | null)[]
+  rotary: (string | null)[]
+  /** 'combination' when taken from a sub-machine axis order, 'names' for the X→X fallback. */
+  source: 'combination' | 'names'
+}
+
+const LIN = ['X', 'Y', 'Z'] as const
+const ROT = ['A', 'B', 'C'] as const
+
+/**
+ * Resolve the active sub-machine's axis order (axis IDs) to axis names once,
+ * so per-step playback does no lookups. Falls back to direct name mapping
+ * (G-code X → axis named X, …) when there is no matching combination.
+ */
+export function buildAxisMapping(
+  config: KinematicConfig,
+  chain: KinematicChain,
+  combinationId: number | null,
+): AxisMapping {
+  const combo = config.combinations?.find(c => c.id === combinationId)
+  if (combo) {
+    const resolve = (ids: number[]) =>
+      [0, 1, 2].map(i => (i < ids.length ? chain.axisNameById(ids[i]) ?? null : null))
+    return {
+      linear: resolve(combo.axesOrder.linear),
+      rotary: resolve(combo.axesOrder.rotary),
+      source: 'combination',
+    }
+  }
+  const byName = (names: readonly string[]) => names.map(n => (chain.nodes.has(n) ? n : null))
+  return { linear: byName(LIN), rotary: byName(ROT), source: 'names' }
+}
+
+/** Physical axis values for one interpolated point under the given mapping. */
+export function mapPointToAxes(pt: SimPoint, mapping: AxisMapping): Record<string, number> {
+  const out: Record<string, number> = {}
+  const lin = [pt.x, pt.y, pt.z]
+  const rot = [pt.a, pt.b, pt.c]
+  for (let i = 0; i < 3; i++) {
+    const l = mapping.linear[i]
+    if (l) out[l] = lin[i]
+    const r = mapping.rotary[i]
+    if (r) out[r] = rot[i]
+  }
+  return out
+}
+
+/** Human-readable mapping, e.g. { X: "X", Y: "Y", Z: "Z", A: "A" }. */
+export function describeMapping(mapping: AxisMapping): Record<string, string | null> {
+  const out: Record<string, string | null> = {}
+  LIN.forEach((g, i) => { out[g] = mapping.linear[i] ?? null })
+  ROT.forEach((g, i) => { out[g] = mapping.rotary[i] ?? null })
+  return out
+}

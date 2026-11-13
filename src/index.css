@@ -339,6 +339,15 @@ html, body, #root {
 .coord-display .rotary-display .rotary-axis { margin-right: 10px; }
 .coord-display .angular-rate { color: #ffcc80; margin-top: 2px; font-size: 11px; }
 .coord-display .feed-display { color: #ffcc80; margin-top: 2px; font-size: 11px; }
+.coord-display .limit-warning {
+  color: #fff;
+  background: #c62828;
+  padding: 1px 6px;
+  margin-top: 3px;
+  border-radius: 3px;
+  font-weight: bold;
+}
+.axis-control .value.out-of-limit { color: #ff5252 !important; font-weight: bold; }
 
 .coord-display .category-badge {
   color: #4fc3f7;

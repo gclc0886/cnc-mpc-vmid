@@ -1,8 +1,11 @@
 {
   "mcpServers": {
     "cnc-trainer": {
-      "command": "npx",
-      "args": ["tsx", "mcp-server/cnc-trainer-mcp.ts"],
+      "command": "node",
+      "args": [
+        "C:\\CLAUDE-MCP\\CNC-Trainer\\mcp-server\\node_modules\\tsx\\dist\\cli.mjs",
+        "C:\\CLAUDE-MCP\\CNC-Trainer\\mcp-server\\cnc-trainer-mcp.ts"
+      ],
       "cwd": "C:\\CLAUDE-MCP\\CNC-Trainer"
     }
   }

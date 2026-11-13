@@ -81,6 +81,31 @@ export interface KinematicConfig {
 /** Machine category for visualization. */
 export type MachineCategory = 'mill_3x' | 'mill_4x' | 'mill_5x' | 'mill_5x_headhead' | 'turn_mill'
 
+/** An axis value outside its configured travel limits. */
+export interface LimitViolation {
+  axis: string
+  value: number
+  min: number
+  max: number
+}
+
+/** Limits beyond this magnitude are VMID placeholders for "unlimited". */
+const UNLIMITED = 1e8
+
+/** True when the axis has real (non-placeholder) limits. */
+export function hasRealLimits(axis: AxisDef): boolean {
+  const { min, max } = axis.limits
+  return Math.abs(min) < UNLIMITED && Math.abs(max) < UNLIMITED && min < max
+}
+
+/** Returns a violation if `value` is outside the axis limits (static axes never violate). */
+export function checkAxisLimit(axis: AxisDef, value: number, eps = 1e-6): LimitViolation | null {
+  if (axis.type === 'static' || !hasRealLimits(axis)) return null
+  const { min, max } = axis.limits
+  if (value < min - eps || value > max + eps) return { axis: axis.name, value, min, max }
+  return null
+}
+
 /**
  * Kinematic chain engine.
  * Manages axis tree, forward kinematics, matrix computation.
@@ -88,6 +113,8 @@ export type MachineCategory = 'mill_3x' | 'mill_4x' | 'mill_5x' | 'mill_5x_headh
 export class KinematicChain {
   config: KinematicConfig
   nodes: Map<string, KinematicNode> = new Map()
+  /** Same nodes keyed by VMID axis ID (combinations reference axes by ID). */
+  nodesById: Map<number, KinematicNode> = new Map()
   deviceNodes: Map<number, KinematicNode[]> = new Map()
 
   /** Determine machine category from config for visualization. */
@@ -138,6 +165,7 @@ export class KinematicChain {
       children: [],
     }
     this.nodes.set(axisDef.name, node)
+    this.nodesById.set(axisDef.id, node)
 
     if (axisDef.children) {
       for (const child of axisDef.children) {
@@ -147,19 +175,56 @@ export class KinematicChain {
     return node
   }
 
-  /** Set axis value (mm or degrees) and recompute matrices. */
-  setAxisValue(axisName: string, value: number) {
-    const node = this.nodes.get(axisName)
-    if (!node) return
+  /**
+   * Set one axis value (mm or degrees) and recompute matrices.
+   * `clamp` (default true, for manual jogging) keeps the value inside limits.
+   * Simulation passes clamp=false so out-of-limit moves stay visible as violations.
+   */
+  setAxisValue(axisName: string, value: number, clamp = true): LimitViolation | null {
+    const v = this._assign(axisName, value, clamp)
+    this.updateMatrices()
+    return v
+  }
 
-    // Clamp to limits
-    const { min, max } = node.axis.limits
-    if (Math.abs(min) < 1e8 && Math.abs(max) < 1e8) {
+  /**
+   * Set several axes and recompute matrices once.
+   * Returns the limit violations among the assigned values (only when clamp=false;
+   * clamped values never violate).
+   */
+  setAxisValues(values: Record<string, number>, clamp = true): LimitViolation[] {
+    const violations: LimitViolation[] = []
+    for (const name in values) {
+      const v = this._assign(name, values[name], clamp)
+      if (v) violations.push(v)
+    }
+    this.updateMatrices()
+    return violations
+  }
+
+  private _assign(axisName: string, value: number, clamp: boolean): LimitViolation | null {
+    const node = this.nodes.get(axisName)
+    if (!node || !Number.isFinite(value)) return null
+    if (clamp && hasRealLimits(node.axis)) {
+      const { min, max } = node.axis.limits
       value = Math.max(min, Math.min(max, value))
     }
-
     node.currentValue = value
-    this.updateMatrices()
+    return clamp ? null : checkAxisLimit(node.axis, value)
+  }
+
+  /** All axes currently outside their limits. */
+  getLimitViolations(): LimitViolation[] {
+    const out: LimitViolation[] = []
+    for (const node of this.nodes.values()) {
+      const v = checkAxisLimit(node.axis, node.currentValue)
+      if (v) out.push(v)
+    }
+    return out
+  }
+
+  /** Axis name for a VMID axis ID, or undefined. */
+  axisNameById(id: number): string | undefined {
+    return this.nodesById.get(id)?.axis.name
   }
 
   /** Get current axis value. */

@@ -1,5 +1,6 @@
 import { useRef, useCallback } from 'react'
 import { useMachineStore } from '../store/useMachineStore'
+import { checkAxisLimit } from '../engine/KinematicChain'
 
 function useRepeatAction() {
   const timer = useRef<number>(0)
@@ -90,7 +91,11 @@ export function AxisControls() {
               const cur = useMachineStore.getState().chain?.getAxisValue(name) ?? 0
               setAxisValue(name, Math.min(max, cur + 1))
             }} />
-            <span className="value" style={{ color }}>
+            <span
+              className={`value${checkAxisLimit(node.axis, node.currentValue) ? ' out-of-limit' : ''}`}
+              style={{ color }}
+              title={`Limits: ${node.axis.limits.min} … ${node.axis.limits.max}`}
+            >
               {node.currentValue.toFixed(isRotary ? 1 : 2)}{unit}
             </span>
           </div>

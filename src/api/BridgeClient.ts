@@ -1,8 +1,17 @@
-import type { BridgeCommand, BridgeResponse } from './bridge-types'
+import type {
+  BridgeCommand, BridgeResponse, BridgeMethod, BridgeParams, BridgeResult, StepInfo,
+} from './bridge-types'
 import { useMachineStore } from '../store/useMachineStore'
 import { parseVMID } from '../engine/VMIDLoader'
+import { checkAxisLimit } from '../engine/KinematicChain'
+import type { LimitViolation } from '../engine/KinematicChain'
+import { mapPointToAxes, describeMapping } from '../engine/AxisMapping'
 
-const BRIDGE_PORT = 3100
+/** 3100 by default; `?bridgePort=NNNN` (set by Electron from CNC_BRIDGE_PORT) overrides it. */
+const BRIDGE_PORT = (() => {
+  const p = Number(new URLSearchParams(window.location.search).get('bridgePort'))
+  return Number.isInteger(p) && p > 0 && p < 65536 ? p : 3100
+})()
 const RECONNECT_BASE_MS = 1000
 const RECONNECT_MAX_MS = 10000
 
@@ -40,7 +49,7 @@ function connect() {
   ws.onmessage = (event) => {
     try {
       const cmd: BridgeCommand = JSON.parse(event.data as string)
-      handleCommand(cmd)
+      void handleCommand(cmd)
     } catch (e) {
       console.error('[bridge] Bad message:', e)
     }
@@ -72,10 +81,12 @@ function send(response: BridgeResponse) {
 
 // --- Command Dispatcher ---
 
-function handleCommand(cmd: BridgeCommand) {
+async function handleCommand(cmd: BridgeCommand) {
   const { id, method, params } = cmd
   try {
-    const result = dispatch(method, params)
+    const handler = handlers[method] as ((p: unknown) => unknown) | undefined
+    if (!handler) throw new Error(`Unknown method: ${method}`)
+    const result = await handler(params ?? {})
     send({ id, result })
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e)
@@ -83,172 +94,218 @@ function handleCommand(cmd: BridgeCommand) {
   }
 }
 
-function dispatch(method: string, params: Record<string, unknown>): unknown {
-  const store = useMachineStore.getState()
-  const { chain, config } = store
+const store = () => useMachineStore.getState()
 
-  switch (method) {
-    // --- Group A: State Reading ---
+function requireChain() {
+  const { chain } = store()
+  if (!chain) throw new Error('No machine loaded')
+  return chain
+}
 
-    case 'get_machine_state': {
-      return {
-        name: store.machineName,
-        info: store.machineInfo,
-        category: chain?.machineCategory ?? null,
-        positions: chain?.getAllPositions() ?? {},
-        toolTip: chain ? { mcs: chain.getToolTipPosition() } : null,
-        gcode: store.gcode.substring(0, 200) + (store.gcode.length > 200 ? '...' : ''),
-        animationStep: store.currentStep,
-        totalSteps: store.toolPath.length,
-        isPlaying: store.isPlaying,
-      }
-    }
-
-    case 'get_axis_positions': {
-      return chain?.getAllPositions() ?? {}
-    }
-
-    case 'get_matrices': {
-      if (!chain) return 'No machine loaded'
-      const matrices = chain.getAllMatrices()
-      const lines: string[] = []
-      for (const { name, matrix } of matrices) {
-        lines.push(`=== ${name} (world) ===`)
-        const m = matrix.data
-        for (let r = 0; r < 4; r++) {
-          lines.push(
-            `| ${m[r * 4 + 0].toFixed(4).padStart(9)} ${m[r * 4 + 1].toFixed(4).padStart(9)} ${m[r * 4 + 2].toFixed(4).padStart(9)} ${m[r * 4 + 3].toFixed(4).padStart(9)} |`
-          )
-        }
-        lines.push('')
-      }
-
-      // Add relative matrix
-      const rel = chain.getRelativeMatrix()
-      lines.push('=== Relative (Inv(Table) × Spindle) ===')
-      const rm = rel.data
-      for (let r = 0; r < 4; r++) {
-        lines.push(
-          `| ${rm[r * 4 + 0].toFixed(4).padStart(9)} ${rm[r * 4 + 1].toFixed(4).padStart(9)} ${rm[r * 4 + 2].toFixed(4).padStart(9)} ${rm[r * 4 + 3].toFixed(4).padStart(9)} |`
-        )
-      }
-      return lines.join('\n')
-    }
-
-    case 'get_tool_position': {
-      if (!chain) return { error: 'No machine loaded' }
-      const mcs = chain.getToolTipPosition()
-      const rel = chain.getRelativeMatrix()
-      const wcs = rel.getTranslation()
-      return {
-        mcs: { x: mcs[0], y: mcs[1], z: mcs[2] },
-        wcs: { x: wcs[0], y: wcs[1], z: wcs[2] },
-      }
-    }
-
-    case 'get_config': {
-      return config
-    }
-
-    // --- Group B: Machine Control ---
-
-    case 'load_preset': {
-      store.loadPreset(params.key as string)
-      return { success: true, name: useMachineStore.getState().machineName }
-    }
-
-    case 'load_vmid': {
-      const xml = params.xml as string
-      const vmidConfig = parseVMID(xml)
-      store.loadConfig(vmidConfig)
-      return { success: true, name: vmidConfig.name }
-    }
-
-    case 'set_axis_value': {
-      store.setAxisValue(params.name as string, params.value as number)
-      return { success: true }
-    }
-
-    case 'set_axes': {
-      const axes = params.axes as Record<string, number>
-      for (const [name, value] of Object.entries(axes)) {
-        store.setAxisValue(name, value)
-      }
-      return { success: true }
-    }
-
-    case 'reset_axes': {
-      store.resetAxes()
-      return { success: true }
-    }
-
-    // --- Group C: G-code ---
-
-    case 'load_gcode': {
-      store.setGcode(params.gcode as string)
-      return { success: true }
-    }
-
-    case 'parse_gcode': {
-      store.parseGcode()
-      const state = useMachineStore.getState()
-      return { totalSteps: state.toolPath.length }
-    }
-
-    // --- Group D: Animation ---
-
-    case 'play_animation': {
-      store.setIsPlaying(true)
-      return { success: true }
-    }
-
-    case 'pause_animation': {
-      store.setIsPlaying(false)
-      return { success: true }
-    }
-
-    case 'set_animation_step': {
-      store.setCurrentStep(params.step as number)
-      return { success: true }
-    }
-
-    case 'get_animation_state': {
-      return {
-        currentStep: store.currentStep,
-        totalSteps: store.toolPath.length,
-        isPlaying: store.isPlaying,
-      }
-    }
-
-    // --- Group E: Configuration ---
-
-    case 'update_axis_config': {
-      store.updateAxis(params.axisName as string, params.changes as Record<string, unknown>)
-      return { success: true }
-    }
-
-    case 'add_axis': {
-      store.addAxis(
-        params.parentAxisName as string,
-        params.deviceId as number,
-        params.axis as any,
-      )
-      return { success: true }
-    }
-
-    case 'add_device': {
-      store.addDevice(params.device as any)
-      return { success: true }
-    }
-
-    case 'remove_axis': {
-      store.removeAxis(params.axisName as string)
-      return { success: true }
-    }
-
-    default:
-      throw new Error(`Unknown method: ${method}`)
+function formatMatrixRows(m: number[]): string[] {
+  const rows: string[] = []
+  for (let r = 0; r < 4; r++) {
+    rows.push('| ' + [0, 1, 2, 3].map(c => m[r * 4 + c].toFixed(4).padStart(9)).join(' ') + ' |')
   }
+  return rows
+}
+
+function toolPosition() {
+  const chain = requireChain()
+  const mcs = chain.getToolTipPosition()
+  const wcs = chain.getRelativeMatrix().getTranslation()
+  return {
+    mcs: { x: mcs[0], y: mcs[1], z: mcs[2] },
+    wcs: { x: wcs[0], y: wcs[1], z: wcs[2] },
+  }
+}
+
+/** Everything about one playback step, computed without moving the machine. */
+function buildStepInfo(stepArg?: number): StepInfo {
+  const s = store()
+  const chain = requireChain()
+  const total = s.toolPath.length
+  if (total === 0) throw new Error('No tool path — call parse_gcode first')
+  const step = stepArg ?? s.currentStep
+  if (!Number.isInteger(step) || step < 0 || step >= total) {
+    throw new Error(`Step ${step} out of range 0..${total - 1}`)
+  }
+  const pt = s.toolPath[step]
+  const block = s.parsedBlocks[pt.blockIndex]
+  const mapping = s.axisMapping
+  const axes = mapping ? mapPointToAxes(pt, mapping) : {}
+  const violations: LimitViolation[] = []
+  for (const [name, value] of Object.entries(axes)) {
+    const node = chain.nodes.get(name)
+    const v = node && checkAxisLimit(node.axis, value)
+    if (v) violations.push(v)
+  }
+  const combo = s.config?.combinations?.find(c => c.id === s.activeCombinationId)
+  return {
+    step,
+    totalSteps: total,
+    blockIndex: pt.blockIndex,
+    line: block?.line ?? null,
+    source: block?.raw ?? null,
+    rapid: pt.rapid,
+    feed: pt.feed,
+    programmed: { X: pt.x, Y: pt.y, Z: pt.z, A: pt.a, B: pt.b, C: pt.c },
+    axes,
+    mapping: mapping ? describeMapping(mapping) : {},
+    activeCombination: combo ? { id: combo.id, name: combo.name } : null,
+    limitViolations: violations,
+    tcp: step === s.currentStep ? toolPosition() : null,
+  }
+}
+
+type Handlers = {
+  [M in BridgeMethod]: (params: BridgeParams<M>) => BridgeResult<M> | Promise<BridgeResult<M>>
+}
+
+const handlers: Handlers = {
+  // --- State reading ---
+
+  get_machine_state: () => {
+    const s = store()
+    const { chain } = s
+    return {
+      name: s.machineName,
+      info: s.machineInfo,
+      category: chain?.machineCategory ?? null,
+      positions: chain?.getAllPositions() ?? {},
+      toolTip: chain ? toolPosition() : null,
+      limitViolations: chain?.getLimitViolations() ?? [],
+      activeCombinationId: s.activeCombinationId,
+      gcode: s.gcode.substring(0, 200) + (s.gcode.length > 200 ? '...' : ''),
+      animationStep: s.currentStep,
+      totalSteps: s.toolPath.length,
+      isPlaying: s.isPlaying,
+    }
+  },
+
+  get_axis_positions: () => store().chain?.getAllPositions() ?? {},
+
+  get_matrices: () => {
+    const chain = store().chain
+    if (!chain) return 'No machine loaded'
+    const lines: string[] = []
+    for (const { name, matrix } of chain.getAllMatrices()) {
+      lines.push(`=== ${name} (world) ===`, ...formatMatrixRows(matrix.data), '')
+    }
+    lines.push('=== Relative (Inv(Table) × Spindle) ===', ...formatMatrixRows(chain.getRelativeMatrix().data))
+    return lines.join('\n')
+  },
+
+  get_tool_position: () => (store().chain ? toolPosition() : { error: 'No machine loaded' }),
+
+  get_config: () => store().config,
+
+  // --- Machine control ---
+
+  load_preset: ({ key }) => {
+    store().loadPreset(key)
+    if (!store().config) throw new Error(`Unknown preset: ${key}`)
+    return { success: true, name: store().machineName }
+  },
+
+  load_vmid: ({ xml }) => {
+    const cfg = parseVMID(xml)
+    store().loadConfig(cfg)
+    return { success: true, name: cfg.name, axes: cfg.axisCount, combinations: cfg.combinations.length }
+  },
+
+  set_axis_value: ({ name, value }) => {
+    if (!requireChain().nodes.has(name)) throw new Error(`Unknown axis: ${name}`)
+    store().setAxisValue(name, value)
+    return { success: true }
+  },
+
+  set_axes: ({ axes }) => {
+    const chain = requireChain()
+    const unknown = Object.keys(axes).filter(n => !chain.nodes.has(n))
+    if (unknown.length) throw new Error(`Unknown axes: ${unknown.join(', ')}`)
+    chain.setAxisValues(axes)
+    store().bumpVersion()
+    return { success: true }
+  },
+
+  reset_axes: () => {
+    store().resetAxes()
+    return { success: true }
+  },
+
+  // --- G-code ---
+
+  load_gcode: ({ gcode }) => {
+    store().setGcode(gcode)
+    return { success: true }
+  },
+
+  parse_gcode: () => {
+    store().parseGcode()
+    const s = store()
+    return { totalSteps: s.toolPath.length, blocks: s.parsedBlocks.length }
+  },
+
+  // --- Animation ---
+
+  play_animation: () => {
+    store().setIsPlaying(true)
+    return { success: true }
+  },
+
+  pause_animation: () => {
+    store().setIsPlaying(false)
+    return { success: true }
+  },
+
+  set_animation_step: ({ step }) => {
+    const info = buildStepInfo(step) // validates range
+    store().setIsPlaying(false)
+    store().applyStep(step)
+    return { ...info, tcp: toolPosition() }
+  },
+
+  get_animation_state: () => {
+    const s = store()
+    return { currentStep: s.currentStep, totalSteps: s.toolPath.length, isPlaying: s.isPlaying }
+  },
+
+  get_step_info: ({ step }) => buildStepInfo(step),
+
+  // --- Configuration ---
+
+  update_axis_config: ({ axisName, changes }) => {
+    store().updateAxis(axisName, changes)
+    return { success: true }
+  },
+
+  add_axis: ({ parentAxisName, deviceId, axis }) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    store().addAxis(parentAxisName, deviceId, axis as any)
+    return { success: true }
+  },
+
+  add_device: ({ device }) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    store().addDevice(device as any)
+    return { success: true }
+  },
+
+  remove_axis: ({ axisName }) => {
+    store().removeAxis(axisName)
+    return { success: true }
+  },
+
+  // --- View ---
+
+  capture_screenshot: async ({ width }) => {
+    const api = window.electronAPI
+    if (!api?.capturePage) throw new Error('Screenshots are available only in the Electron app')
+    const res = await api.capturePage({ width })
+    if ('error' in res) throw new Error(res.error)
+    return { mimeType: 'image/jpeg', ...res }
+  },
 }
 
 // --- Public API ---

@@ -18,11 +18,14 @@ function createWindow() {
 
   // In dev mode, load from Vite server
   const isDev = process.env.NODE_ENV !== 'production'
+  // Optional non-default MCP bridge port (e.g. a second instance for testing)
+  const bridgePort = process.env.CNC_BRIDGE_PORT
+  const query = bridgePort ? { bridgePort } : undefined
   if (isDev) {
-    mainWindow.loadURL('http://localhost:5173')
+    mainWindow.loadURL('http://localhost:5173' + (bridgePort ? `/?bridgePort=${encodeURIComponent(bridgePort)}` : ''))
     // mainWindow.webContents.openDevTools()
   } else {
-    mainWindow.loadFile(path.join(__dirname, '../dist/index.html'))
+    mainWindow.loadFile(path.join(__dirname, '../dist/index.html'), { query })
   }
 }
 
@@ -68,6 +71,20 @@ ipcMain.handle('save-file', async (_event, filePath, content) => {
   try {
     fs.writeFileSync(filePath, content, 'utf-8')
     return { success: true }
+  } catch (err) {
+    return { error: err.message }
+  }
+})
+
+// IPC: Capture the app window as JPEG (used by the MCP capture_screenshot tool)
+ipcMain.handle('capture-page', async (_event, options) => {
+  try {
+    if (!mainWindow) return { error: 'No window' }
+    let image = await mainWindow.webContents.capturePage()
+    const maxWidth = Math.max(200, Math.min(4000, Number(options?.width) || 1200))
+    if (image.getSize().width > maxWidth) image = image.resize({ width: maxWidth, quality: 'good' })
+    const { width, height } = image.getSize()
+    return { data: image.toJPEG(80).toString('base64'), width, height }
   } catch (err) {
     return { error: err.message }
   }
