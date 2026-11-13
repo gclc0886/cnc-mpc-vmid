@@ -2,7 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
 import { WebSocketServer, WebSocket } from 'ws'
-import { readFile } from 'node:fs/promises'
+import { readFile, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import type {
   BridgeMethod, BridgeParams, BridgeResult, BridgeControl,
@@ -375,7 +375,60 @@ server.tool('set_tool', 'Set or remove a tool-table entry. Key = T value as text
   remove: z.boolean().optional().describe('Delete the entry'),
 }, async (p) => json(await sendCommand('set_tool', p)))
 
-// ===== Group G: View =====
+// ===== Group G: Machine structure =====
+
+server.tool('list_combinations', 'List sub-machines (combinations) with the programmed-letter → physical-axis mapping of each, and the active one', {},
+  async () => json(await sendCommand('list_combinations', {})))
+
+server.tool('set_active_combination', 'Select the sub-machine used to map program X..C to physical axes. The program is re-simulated at the current step.', {
+  id: z.number().int().describe('Combination id from list_combinations'),
+}, async ({ id }) => json(await sendCommand('set_active_combination', { id })))
+
+server.tool('get_channels', 'Get channels and access patterns (axis exchange) of the loaded VMID', {},
+  async () => json(await sendCommand('get_channels', {})))
+
+server.tool('export_vmid', 'Export the current machine as VMID XML (Ver 58). Without `path` returns the XML; with `path` writes a NEW file (refuses to overwrite unless overwrite=true). Note: the export does not yet keep every VMID detail (options, cycles, stations) — never overwrite a production VMID with it.', {
+  path: z.string().optional().describe('Absolute path of the .vmid file to write'),
+  overwrite: z.boolean().optional().describe('Allow replacing an existing file'),
+}, async ({ path, overwrite }) => {
+  const { name, xml } = await sendCommand('export_vmid', {})
+  if (!path) return text(xml)
+  const target = resolve(path)
+  try {
+    await writeFile(target, xml, { encoding: 'utf-8', flag: overwrite ? 'w' : 'wx' })
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException
+    if (err.code === 'EEXIST') throw new Error(`${target} already exists — pass overwrite=true to replace it`)
+    throw e
+  }
+  return text(`Exported "${name}" to ${target} (${xml.length} bytes)`)
+})
+
+// ===== Group H: Program analysis / playback =====
+
+server.tool('get_diagnostics', 'All diagnostics for the current program on the current machine (interpreter, unmapped axes, limit violations, kinematics)', {
+  severity: z.enum(['error', 'warning', 'info']).optional().describe('Only this severity'),
+}, async ({ severity }) => json(await sendCommand('get_diagnostics', { severity })))
+
+server.tool('find_limit_violations', 'Axes that leave their travel limits anywhere in the program: worst value, sample count, first step and source line', {},
+  async () => json(await sendCommand('find_limit_violations', {})))
+
+server.tool('run_to_line', 'Pause and move the machine to the first motion at or after a source line; returns the step info', {
+  line: z.number().int().min(1).describe('1-based line number in the program'),
+}, async ({ line }) => json(await sendCommand('run_to_line', { line })))
+
+server.tool('set_playback_speed', 'Playback speed as a multiple of real program time', {
+  speed: z.number().describe('1, 5, 20, 100 or 500'),
+}, async ({ speed }) => json(await sendCommand('set_playback_speed', { speed })))
+
+// ===== Group I: View =====
+
+server.tool('set_camera_view', 'Move the 3D camera: iso, front, top, right, left, or fit (frame the tool path, keep direction)', {
+  view: z.enum(['iso', 'front', 'top', 'right', 'left', 'fit']),
+}, async ({ view }) => {
+  await sendCommand('set_camera_view', { view })
+  return text(`Camera: ${view}`)
+})
 
 server.tool('capture_screenshot', 'Capture the CNC Trainer window as an image (Electron only)', {
   width: z.number().int().min(200).max(4000).optional().describe('Max image width in px (default 1200)'),

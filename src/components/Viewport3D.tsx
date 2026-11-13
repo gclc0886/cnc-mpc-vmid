@@ -3,6 +3,7 @@ import { Canvas } from '@react-three/fiber'
 import { OrbitControls, Grid, GizmoHelper, GizmoViewport } from '@react-three/drei'
 import { MachineModel } from '../visualization/MachineModel'
 import { ToolPathLine } from '../visualization/ToolPath'
+import { CameraController } from '../visualization/CameraController'
 import type { KinematicChain, MachineCategory } from '../engine/KinematicChain'
 
 interface Props {
@@ -75,6 +76,7 @@ export function Viewport3D({ chain }: Props) {
         {chain && <ToolPathLine chain={chain} />}
       </group>
 
+      <CameraController chain={chain} />
       <OrbitControls
         makeDefault
         enableDamping

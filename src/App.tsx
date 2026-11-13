@@ -17,9 +17,10 @@ type SideTab = 'controls' | 'setup' | 'configurator'
 
 function App() {
   // Only slow-changing state here: playback updates go to the panels that show them
-  const { chain, machineName, machineInfo, loadPreset, loadConfig, resetAxes } = useMachineStore(useShallow(s => ({
+  const { chain, machineName, machineInfo, loadPreset, loadConfig, resetAxes, requestCameraView } = useMachineStore(useShallow(s => ({
     chain: s.chain, machineName: s.machineName, machineInfo: s.machineInfo,
     loadPreset: s.loadPreset, loadConfig: s.loadConfig, resetAxes: s.resetAxes,
+    requestCameraView: s.requestCameraView,
   })))
 
   const [sideTab, setSideTab] = useState<SideTab>('controls')
@@ -143,6 +144,10 @@ function App() {
           <button onClick={saveVMID} disabled={!chain}>Save VMID</button>
           <span className="toolbar-sep">|</span>
           <button onClick={resetAxes} disabled={!chain}>Reset</button>
+          <span className="toolbar-sep">|</span>
+          {([['iso', 'Iso'], ['front', 'Front'], ['top', 'Top'], ['right', 'Right'], ['fit', 'Fit']] as const).map(([v, label]) => (
+            <button key={v} onClick={() => requestCameraView(v)} disabled={!chain} title={`Camera: ${label}`}>{label}</button>
+          ))}
           {bridgeConnected && (
             <span title="Claude MCP connected" style={{
               display: 'inline-block', width: 8, height: 8, borderRadius: '50%',

@@ -1,11 +1,12 @@
 import type {
-  BridgeCommand, BridgeResponse, BridgeMethod, BridgeParams, BridgeResult, StepInfo, SetupInfo,
+  BridgeCommand, BridgeResponse, BridgeMethod, BridgeParams, BridgeResult, StepInfo, SetupInfo, CombinationsInfo,
 } from './bridge-types'
-import { useMachineStore, INITIAL_WORK_OFFSET } from '../store/useMachineStore'
-import { parseVMID } from '../engine/VMIDLoader'
+import { useMachineStore, INITIAL_WORK_OFFSET, PLAYBACK_SPEEDS, CAMERA_VIEWS } from '../store/useMachineStore'
+import type { CameraView } from '../store/useMachineStore'
+import { parseVMID, exportVMID } from '../engine/VMIDLoader'
 import { checkAxisLimit } from '../engine/KinematicChain'
 import type { LimitViolation } from '../engine/KinematicChain'
-import { mapPointToAxes, describeMapping } from '../engine/AxisMapping'
+import { mapPointToAxes, describeMapping, buildAxisMapping } from '../engine/AxisMapping'
 
 /** 3100 by default; `?bridgePort=NNNN` (set by Electron from CNC_BRIDGE_PORT) overrides it. */
 const BRIDGE_PORT = (() => {
@@ -158,6 +159,18 @@ function buildStepInfo(stepArg?: number): StepInfo {
     activeCombination: combo ? { id: combo.id, name: combo.name } : null,
     limitViolations: violations,
     tcp: step === s.currentStep ? toolPosition() : null,
+  }
+}
+
+function combinationsInfo(): CombinationsInfo {
+  const { config, chain, activeCombinationId } = store()
+  if (!config || !chain) throw new Error('No machine loaded')
+  return {
+    active: activeCombinationId,
+    combinations: config.combinations.map(c => ({
+      id: c.id, name: c.name, turretId: c.turretId, tableId: c.tableId,
+      mapping: describeMapping(buildAxisMapping(config, chain, c.id)),
+    })),
   }
 }
 
@@ -341,7 +354,72 @@ const handlers: Handlers = {
     return setupInfo()
   },
 
+  // --- Machine structure ---
+
+  list_combinations: () => combinationsInfo(),
+
+  set_active_combination: ({ id }) => {
+    const { config } = store()
+    if (!config?.combinations.some(c => c.id === id)) {
+      throw new Error(`No combination with id ${id}. Available: ${config?.combinations.map(c => `${c.id} (${c.name})`).join(', ') || 'none'}`)
+    }
+    store().setActiveCombination(id)
+    return combinationsInfo()
+  },
+
+  get_channels: () => {
+    const { config } = store()
+    return { channels: config?.channels ?? [], accessPatterns: config?.accessPatterns ?? [] }
+  },
+
+  export_vmid: () => {
+    const { config } = store()
+    if (!config) throw new Error('No machine loaded')
+    return { name: config.name, xml: exportVMID(config) }
+  },
+
+  // --- Program analysis / playback ---
+
+  get_diagnostics: ({ severity }) => {
+    const d = store().diagnostics
+    return {
+      errors: d.filter(x => x.severity === 'error').length,
+      warnings: d.filter(x => x.severity === 'warning').length,
+      items: severity ? d.filter(x => x.severity === severity) : d,
+    }
+  },
+
+  find_limit_violations: () => {
+    const { pathKin, toolPath, parsedBlocks } = store()
+    if (!pathKin) throw new Error('No tool path — call parse_gcode first')
+    return {
+      violations: pathKin.limits.map(l => {
+        const block = parsedBlocks[toolPath[l.firstStep]?.blockIndex ?? -1]
+        return { ...l, line: block?.line ?? null, source: block?.raw ?? null }
+      }),
+    }
+  },
+
+  run_to_line: ({ line }) => {
+    const step = store().jumpToLine(line)
+    if (step < 0) throw new Error(`No motion at or after line ${line}`)
+    return { ...buildStepInfo(step), tcp: toolPosition() }
+  },
+
+  set_playback_speed: ({ speed }) => {
+    const allowed = [...PLAYBACK_SPEEDS] as number[]
+    if (!allowed.includes(speed)) throw new Error(`Speed must be one of ${allowed.join(', ')} (× real time)`)
+    store().setPlaybackSpeed(speed)
+    return { speed, allowed }
+  },
+
   // --- View ---
+
+  set_camera_view: ({ view }) => {
+    if (!(CAMERA_VIEWS as string[]).includes(view)) throw new Error(`View must be one of ${CAMERA_VIEWS.join(', ')}`)
+    store().requestCameraView(view as CameraView)
+    return { success: true }
+  },
 
   capture_screenshot: async ({ width }) => {
     const api = window.electronAPI

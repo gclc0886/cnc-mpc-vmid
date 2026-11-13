@@ -11,7 +11,9 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "pack": "npm run build && electron-builder --win --dir",
+    "dist": "npm run build && electron-builder --win"
   },
   "keywords": [
     "cnc",
@@ -22,7 +24,30 @@
   "author": "",
   "license": "ISC",
   "type": "commonjs",
-  "dependencies": {
+  "build": {
+    "appId": "local.cnc-trainer",
+    "productName": "CNC Trainer",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  },
+  "devDependencies": {
     "@codemirror/commands": "^6.11.1",
     "@codemirror/language": "^6.13.1",
     "@codemirror/lint": "^6.9.8",
@@ -31,25 +56,23 @@
     "@lezer/highlight": "^1.2.5",
     "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.5.0",
-    "electron": "^41.0.2",
-    "react": "^19.2.4",
-    "react-dom": "^19.2.4",
-    "three": "^0.183.2",
-    "zustand": "^5.0.12"
-  },
-  "devDependencies": {
     "@tailwindcss/vite": "^4.2.1",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@types/three": "^0.183.1",
     "@vitejs/plugin-react": "^6.0.1",
     "concurrently": "^9.2.1",
+    "electron": "^41.0.2",
     "electron-builder": "^26.8.1",
     "jsdom": "^29.1.1",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
     "tailwindcss": "^4.2.1",
+    "three": "^0.183.2",
     "typescript": "^5.9.3",
     "vite": "^8.0.0",
     "vitest": "^5.1.0",
-    "wait-on": "^9.0.4"
+    "wait-on": "^9.0.4",
+    "zustand": "^5.0.12"
   }
 }

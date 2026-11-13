@@ -16,6 +16,10 @@ export type TraceFrame = 'work' | 'world'
 /** Playback speed multipliers relative to real program time. */
 export const PLAYBACK_SPEEDS = [1, 5, 20, 100, 500] as const
 
+/** Camera presets: direction in CNC coordinates; 'fit' keeps the direction and frames the trace. */
+export type CameraView = 'iso' | 'front' | 'top' | 'right' | 'left' | 'fit'
+export const CAMERA_VIEWS: CameraView[] = ['iso', 'front', 'top', 'right', 'left', 'fit']
+
 /** Settable work offsets shown in Setup. */
 export const WORK_OFFSET_NAMES = ['G54', 'G55', 'G56', 'G57'] as const
 
@@ -67,6 +71,8 @@ interface MachineStore {
   /** Multiple of real program time (see PLAYBACK_SPEEDS). */
   playbackSpeed: number
   traceFrame: TraceFrame
+  /** Last camera view request; the viewport reacts to a new nonce. */
+  cameraRequest: { view: CameraView; nonce: number } | null
 
   // Setup: work offsets (per machine) and tool table (kept across machines and restarts)
   workOffsets: Record<string, AxisOffsets>
@@ -103,6 +109,7 @@ interface MachineStore {
   setToolPath: (points: SimPoint[]) => void
   setPlaybackSpeed: (speed: number) => void
   setTraceFrame: (frame: TraceFrame) => void
+  requestCameraView: (view: CameraView) => void
   setWorkOffset: (name: string, offset: AxisOffsets) => void
   /** Set a tool-table entry; null removes it. */
   setTool: (key: string, entry: ToolEntry | null) => void
@@ -178,6 +185,7 @@ export const useMachineStore = create<MachineStore>((set, get) => ({
   isPlaying: false,
   playbackSpeed: 20,
   traceFrame: 'work',
+  cameraRequest: null,
 
   workOffsets: {},
   autoWorkOffset: { ...ZERO_OFFSET },
@@ -303,6 +311,7 @@ export const useMachineStore = create<MachineStore>((set, get) => ({
   setToolPath: (points) => { set({ toolPath: points }); analyzePath(get, set) },
   setPlaybackSpeed: (speed) => set({ playbackSpeed: speed }),
   setTraceFrame: (frame) => set({ traceFrame: frame }),
+  requestCameraView: (view) => set({ cameraRequest: { view, nonce: (get().cameraRequest?.nonce ?? 0) + 1 } }),
 
   applyStep: (step) => {
     const { chain, toolPath, axisMapping, stepViolations } = get()

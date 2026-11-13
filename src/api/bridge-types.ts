@@ -63,6 +63,31 @@ export interface ParseSummary {
   diagnostics: DiagnosticInfo[]
 }
 
+export interface CombinationsInfo {
+  active: number | null
+  combinations: {
+    id: number
+    name: string
+    turretId: number
+    tableId: number
+    /** Programmed letter → physical axis for this sub-machine. */
+    mapping: Record<string, string | null>
+  }[]
+}
+
+export interface LimitSummaryInfo {
+  axis: string
+  min: number
+  max: number
+  /** Value furthest outside the range. */
+  worst: number
+  /** Samples out of range. */
+  count: number
+  firstStep: number
+  line: number | null
+  source: string | null
+}
+
 export interface Offset6 { x: number; y: number; z: number; a: number; b: number; c: number }
 
 export interface SetupInfo {
@@ -118,7 +143,21 @@ export interface BridgeMethods {
   /** length/radius update; remove=true deletes the entry. Re-simulates the program. */
   set_tool: { params: { key: string; length?: number; radius?: number; remove?: boolean }; result: SetupInfo }
 
+  // --- Machine structure ---
+  list_combinations: { params: NoParams; result: CombinationsInfo }
+  set_active_combination: { params: { id: number }; result: CombinationsInfo }
+  get_channels: { params: NoParams; result: { channels: unknown[]; accessPatterns: unknown[] } }
+  /** VMID XML of the current machine (Ver 58 export; lossy for some VMID content). */
+  export_vmid: { params: NoParams; result: { name: string; xml: string } }
+
+  // --- Program analysis / playback ---
+  get_diagnostics: { params: { severity?: 'error' | 'warning' | 'info' }; result: { errors: number; warnings: number; items: DiagnosticInfo[] } }
+  find_limit_violations: { params: NoParams; result: { violations: LimitSummaryInfo[] } }
+  run_to_line: { params: { line: number }; result: StepInfo }
+  set_playback_speed: { params: { speed: number }; result: { speed: number; allowed: number[] } }
+
   // --- View ---
+  set_camera_view: { params: { view: string }; result: Ok }
   /** JPEG of the app window, base64 (Electron only). */
   capture_screenshot: { params: { width?: number }; result: { mimeType: 'image/jpeg'; data: string; width: number; height: number } }
 }

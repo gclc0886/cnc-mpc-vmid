@@ -20,7 +20,7 @@ Claude Code  <-->  MCP Server (stdio, Node.js)
                   Zustand Store <-> KinematicChain Engine
 ```
 
-- **MCP Server**: `mcp-server/cnc-trainer-mcp.ts` — 27 tools, WebSocket relay; method/param/result contract in `src/api/bridge-types.ts` (shared, type-checked on both sides)
+- **MCP Server**: `mcp-server/cnc-trainer-mcp.ts` — 36 tools, WebSocket relay; method/param/result contract in `src/api/bridge-types.ts` (shared, type-checked on both sides)
 - **Bridge Client**: `src/api/BridgeClient.ts` — browser-side WS client, dispatches commands to Zustand store
 - **Store**: `src/store/useMachineStore.ts` — central state (config, chain, toolPath, playback, activeCombination)
 - **Engine**: `src/engine/KinematicChain.ts` — forward kinematics, matrix math, types for Combinations/Channels/AccessPatterns
@@ -148,6 +148,10 @@ The VMID loader (`VMIDLoader.ts`) handles SolidCAM Virtual Machine ID format:
 | `get_config` | Full KinematicConfig JSON (includes combinations, channels, accessPatterns) |
 | `get_animation_state` | currentStep, totalSteps, isPlaying |
 | `get_step_info` | `step?` — source line, programmed X..C, machine X..C (after frame/offset/tool), tool, mapped physical axes, limit violations; TCP only for the current step. Does not move the machine |
+| `get_diagnostics` | `severity?` — all messages for the program on this machine (interpreter, unmapped axes, limits, kinematics) |
+| `find_limit_violations` | Per axis: limits, worst value, sample count, first step + source line |
+| `list_combinations` | Sub-machines with their X..C → physical axis mapping, active id |
+| `get_channels` | Channels and access patterns from the VMID |
 | `get_setup` | Work offsets G54…G57, auto G54 for this machine, tool table, tools/offsets the program uses |
 | `set_work_offset` | `name`, `offset` (partial) — re-simulates at the current step |
 | `set_tool` | `key`, `length?`, `radius?`, `remove?` — re-simulates at the current step |
@@ -159,6 +163,8 @@ The VMID loader (`VMIDLoader.ts`) handles SolidCAM Virtual Machine ID format:
 | `load_preset` | `key`: 3x, 4x, 5x_ac, 5x_bc, turn_mill | Loads built-in preset |
 | `load_vmid` | `xml`: VMID XML string | Loads machine from VMID |
 | `load_vmid_file` | `path` | Reads a .vmid from disk (ISO-8859-1/UTF-8) and loads it |
+| `export_vmid` | `path?`, `overwrite?` | Returns VMID XML, or writes a NEW file (refuses to overwrite without `overwrite`). Export is lossy (B15) — never overwrite a production VMID |
+| `set_active_combination` | `id` | Select sub-machine; re-simulates at the current step |
 | `set_axis_value` | `name`, `value` | Jog single axis (clamped to limits; unknown name → error) |
 | `set_axes` | `axes`: {name: value, ...} | Jog several axes, one matrix update |
 | `reset_axes` | — | Zero all axes |
@@ -172,6 +178,9 @@ The VMID loader (`VMIDLoader.ts`) handles SolidCAM Virtual Machine ID format:
 | `play_animation` | — | Start playback |
 | `pause_animation` | — | Pause playback |
 | `set_animation_step` | `step`: int | Pause, move the machine to the step, return the same info as `get_step_info` + TCP |
+| `run_to_line` | `line` | Pause at the first motion at/after a source line, return step info |
+| `set_playback_speed` | `speed` | 1, 5, 20, 100 or 500 × real time |
+| `set_camera_view` | `view` | iso, front, top, right, left, fit (frame the path) |
 
 **Limits:** jogging clamps; G-code simulation never clamps — out-of-limit values are applied and reported (`limitViolations`, red LIMIT badge in the viewport).
 
@@ -235,6 +244,12 @@ add_device(device={name:"Spindle X", type:"spindle", axes:[{name:"W", type:"line
 - **"CNC Trainer not connected"**: App not running or WS not connected. Start app first.
 - **Port 3100 in use**: a newer MCP server asks the current owner to release the port ("takeover", latest session wins) and servers exit when Claude Code closes stdio. A server from before this change won't respond — the tool error says so; then `netstat -ano | findstr :3100` → `taskkill /PID <pid> /F` (the new server reconnects by itself every 5 s).
 - **Second app instance / testing**: `CNC_BRIDGE_PORT=3101 npm start` + MCP server with the same env var.
+
+## Build & Electron security
+
+- `npm run pack` → unpacked app in `release/win-unpacked/` (quick check); `npm run dist` → NSIS installer + portable exe in `release/`. Code signing / exe editing is off (`signAndEditExecutable: false`): the signing toolkit needs symlink rights on Windows. All runtime libraries are bundled by Vite, so every npm package is a devDependency and `app.asar` is ~1.5 MB.
+- Packaged app loads `dist/index.html` (`app.isPackaged`); `CNC_BRIDGE_PORT` works there too.
+- Renderer is sandboxed; it can read/write only files the user picked in the Open/Save dialogs (`electron/main.js`), cannot open windows or navigate away. The MCP server reads files itself (Node), not through the renderer.
 
 ## Tests
 
