@@ -25,7 +25,8 @@ const gcodeLanguage = StreamLanguage.define<null>({
     if (stream.match(/^G\d+(\.\d+)?/i)) return 'keyword'
     if (stream.match(/^M\d+/i)) return 'atom'
     if (stream.match(/^R\d+/i)) return 'variable'
-    if (stream.match(/^(CR|TURN|[XYZABCIJKUVW]\d?)\s*=?\s*(?=[-+.\d(A-Z])/i)) return 'property'
+    // Axis / centre address: only when a value follows (keeps CYCLE800, CALL … whole)
+    if (stream.match(/^(CR|TURN|[XYZABCIJKUVW]\d?)(?=\s*=|\s*[-+.\d])/i)) return 'property'
     if (stream.match(/^[FSTDHL]\s*=?\s*(?=[-+.\d"])/i)) return 'number'
     if (stream.match(/^[-+]?(\d+\.?\d*|\.\d+)/)) return 'number'
     if (stream.match(/^[A-Z_][A-Z0-9_]*/i)) return 'builtin'

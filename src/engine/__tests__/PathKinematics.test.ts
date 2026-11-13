@@ -57,7 +57,7 @@ describe('time and block navigation', () => {
   const pts = (ts: number[], blocks: number[]): SimPoint[] =>
     ts.map((t, i) => ({
       x: 0, y: 0, z: 0, a: 0, b: 0, c: 0, mx: 0, my: 0, mz: 0, ma: 0, mb: 0, mc: 0,
-      toolLen: 0, toolRadius: 0, feed: 0, rapid: false, blockIndex: blocks[i], t,
+      toolLen: 0, toolRadius: 0, feed: 0, rapid: false, blockIndex: blocks[i], t, moveIndex: blocks[i], frac: 1,
     }))
 
   it('stepAtTime finds the first sample at or after t', () => {

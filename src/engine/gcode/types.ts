@@ -95,7 +95,8 @@ export interface ProgramMove {
   /** Index into the lexed blocks / `GCodeBlock[]`. */
   blockIndex: number
   line: number
-  kind: 'rapid' | 'linear' | 'arc' | 'dwell'
+  /** 'swivel' = rotary positioning of CYCLE800 (target orientation in `swivel`). */
+  kind: 'rapid' | 'linear' | 'arc' | 'dwell' | 'swivel'
   start: Pos6
   end: Pos6
   arc?: {
@@ -124,4 +125,17 @@ export interface ProgramMove {
   plane: Plane
   /** How program coordinates of this move become machine axis values. */
   xf: MoveTransform
+  /**
+   * Kinematic transformation in effect:
+   * 'none'   — axes = MachineMapper (frame + offset + tool length);
+   * 'traori' — TRAORI: tool tip held on the programmed point while rotary axes move (RTCP);
+   * 'swivel' — CYCLE800 plane active: rotary axes fixed, linear axes solved through the kinematics.
+   */
+  kin: 'none' | 'traori' | 'swivel'
+  /** Axis letters programmed in this block (e.g. "XZ"); unprogrammed axes keep their actual position. */
+  programmed: string
+  /** TRAORI orientation vector A3/B3/C3 at the end of the move, in program coordinates (unit). */
+  orient?: [number, number, number]
+  /** CYCLE800 rotary positioning: tool axis to reach (program frame before the new plane) and direction choice. */
+  swivel?: { toolAxis: [number, number, number]; dir: -1 | 0 | 1; direct?: number[] }
 }

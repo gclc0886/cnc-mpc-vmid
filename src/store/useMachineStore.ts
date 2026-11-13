@@ -6,6 +6,7 @@ import type { SimPoint, GCodeBlock, Diagnostic, AxisLetter, Dialect, AxisOffsets
 import { buildAxisMapping, mapPointToAxes } from '../engine/AxisMapping'
 import type { AxisMapping } from '../engine/AxisMapping'
 import { computePathKinematics, computeAutoWorkOffset } from '../engine/PathKinematics'
+import { applyKinematics } from '../engine/Kinematics'
 import type { PathKinematics } from '../engine/PathKinematics'
 import { PRESETS } from '../presets/machinePresets'
 
@@ -230,8 +231,8 @@ export const useMachineStore = create<MachineStore>((set, get) => ({
           }),
       version: get().version + 1,
     })
-    // Same program on an edited machine: limits and the actual path change
-    if (preserveState) analyzePath(get, set)
+    // Same program on an edited machine: kinematic solutions, limits and the actual path change
+    if (preserveState && get().toolPath.length > 0) get().parseGcode({ keepStep: true })
   },
 
   setAxisValue: (name, value) => {
@@ -269,9 +270,14 @@ export const useMachineStore = create<MachineStore>((set, get) => ({
     const res = parseProgram(gcode, {
       rapid, setup: { workOffsets, tools }, initialWorkOffset: INITIAL_WORK_OFFSET,
     })
+    // Machine-dependent stage: TRAORI / CYCLE800 through the kinematics, continuity of axes
+    const { config } = get()
+    const kinDiags = config && axisMapping ? applyKinematics(res.points, res.moves, config, axisMapping) : []
+    const parserDiagnostics = [...res.diagnostics, ...kinDiags].sort((a, b) => (a.line || Infinity) - (b.line || Infinity))
+    const duration = res.points.length > 0 ? res.points[res.points.length - 1].t : 0
     set({
-      parsedBlocks: res.blocks, toolPath: res.points, parserDiagnostics: res.diagnostics, usedAxes: res.usedAxes,
-      programDuration: res.duration, gcodeDialect: res.dialect, toolsUsed: res.toolsUsed,
+      parsedBlocks: res.blocks, toolPath: res.points, parserDiagnostics, usedAxes: res.usedAxes,
+      programDuration: duration, gcodeDialect: res.dialect, toolsUsed: res.toolsUsed,
       workOffsetsUsed: res.workOffsetsUsed, currentStep: 0, isPlaying: false, stepViolations: [],
     })
     analyzePath(get, set)
@@ -330,7 +336,7 @@ export const useMachineStore = create<MachineStore>((set, get) => ({
       activeCombinationId: id,
       axisMapping: config && chain ? buildAxisMapping(config, chain, id) : null,
     })
-    analyzePath(get, set)
+    if (get().toolPath.length > 0) get().parseGcode({ keepStep: true })
   },
 
   setSelectedNode: (name) => set({ selectedNode: name }),

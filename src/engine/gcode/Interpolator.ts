@@ -30,6 +30,9 @@ export interface SimPoint {
   /** Active tool length / radius at this sample (mm). */
   toolLen: number
   toolRadius: number
+  /** Index of the ProgramMove this sample belongs to, and the fraction (0..1] along it. */
+  moveIndex: number
+  frac: number
 }
 
 export interface InterpolateOptions {
@@ -123,6 +126,7 @@ function moveSeconds(m: ProgramMove, opts: Required<Pick<InterpolateOptions, 'de
 
 function stepsFor(m: ProgramMove, lin: number, ang: number, arcAng: number): number {
   if (m.kind === 'dwell') return 1
+  if (m.kind === 'swivel') return 36 // rotary angles are known only after the kinematic stage
   let n = Math.max(Math.ceil(linearLength(m) / lin), Math.ceil(maxRotaryDelta(m) / ang))
   if (m.kind === 'arc' && m.arc) n = Math.max(n, Math.ceil(Math.abs(m.arc.sweep) / (arcAng * DEG)))
   return Math.max(1, n)
@@ -173,7 +177,8 @@ export function interpolate(moves: ProgramMove[], options: InterpolateOptions = 
 
   const points: SimPoint[] = []
   let time = 0
-  for (const m of moves) {
+  for (let mi = 0; mi < moves.length; mi++) {
+    const m = moves[mi]
     const { seconds, speed } = moveSeconds(m, opts)
     const n = stepsFor(m, lin, ang, arcAng)
     for (let s = 1; s <= n; s++) {
@@ -189,6 +194,8 @@ export function interpolate(moves: ProgramMove[], options: InterpolateOptions = 
         mx: q.x, my: q.y, mz: q.z, ma: q.a, mb: q.b, mc: q.c,
         toolLen: m.xf.toolLength,
         toolRadius: m.xf.toolRadius,
+        moveIndex: mi,
+        frac: f,
       })
     }
     time += seconds

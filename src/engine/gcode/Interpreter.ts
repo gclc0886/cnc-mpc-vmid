@@ -1,7 +1,7 @@
 import { lexProgram, detectDialect } from './Lexer'
 import { evaluate, ExpressionError } from './Expression'
 import {
-  IDENTITY3, ZERO_OFFSETS, apply3, fromMachine, mul3, rotInPlane, rotRPY, toMachine, toolVector,
+  IDENTITY3, ZERO_OFFSETS, apply3, fromMachine, mul3, rotInPlane, rotRPY, rotX, rotY, rotZ, toMachine, toolVector,
 } from './MachineMapper'
 import type {
   AxisOffsets, Diagnostic, Dialect, FeedMode, LexedBlock, MachineSetup, MoveTransform, Plane, Pos6, PosMode,
@@ -87,7 +87,7 @@ const FLOW_KEYWORDS = new Set([
 
 /** Features recognised but not simulated yet → warning naming the phase that adds them. */
 const LATER: Record<string, string> = {
-  TRAORI: '1c (TRAORI/RTCP)', TRANSMIT: '1c (TRANSMIT)', TRACYL: '1c (TRACYL)', CYCLE800: '1c (CYCLE800)',
+  TRANSMIT: 'Mill-Turn (TRANSMIT)', TRACYL: 'Mill-Turn (TRACYL)',
   CYCLE81: '1d (drilling cycles)', CYCLE82: '1d (drilling cycles)', CYCLE83: '1d (drilling cycles)',
   CYCLE84: '1d (drilling cycles)', CYCLE840: '1d (drilling cycles)', CYCLE85: '1d (drilling cycles)',
   CYCLE86: '1d (drilling cycles)', CYCLE87: '1d (drilling cycles)', CYCLE88: '1d (drilling cycles)',
@@ -155,6 +155,11 @@ export function interpret(text: string, opts: InterpretOptions = {}): InterpretR
   let frameR = IDENTITY3
   let frameT: [number, number, number] = [0, 0, 0]
   let rotShift: [number, number, number] = [0, 0, 0]
+  // CYCLE800 swivel frame (sits between the work offset and the programmable frame)
+  let swR = IDENTITY3
+  let swT: [number, number, number] = [0, 0, 0]
+  let swivelActive = false
+  let traori = false
   // Tool becomes active on M6 when the program uses M6, otherwise as soon as T is programmed
   const usesM6 = blocks.some(b => b.words.some(w => w.kind === 'addr' && w.letter === 'M' && w.value === 6))
   let selectedTool: string | null = null
@@ -191,13 +196,76 @@ export function interpret(text: string, opts: InterpretOptions = {}): InterpretR
     const lengthKey = dialect === 'fanuc' ? (fanucLengthComp ? fanucH : null) : (tool.D !== 0 ? activeTool : null)
     const length = toolFor(lengthKey, line)?.length ?? 0
     const radius = (setup && activeTool !== null ? setup.tools[activeTool]?.radius : undefined) ?? 0
+    // Total frame WCS → BCS: swivel ∘ programmable
+    const R = mul3(swR, frameR)
+    const st = apply3(swR, frameT)
     return {
-      R: frameR, t: frameT, rotShift, offset: offsetFor(workOffset, line),
+      R, t: [st[0] + swT[0], st[1] + swT[1], st[2] + swT[2]], rotShift, offset: offsetFor(workOffset, line),
       toolVec: toolVector(plane, length), toolLength: length, toolRadius: radius, toolKey: activeTool,
     }
   }
 
   const lookup = (name: string) => params.get(name) ?? (/^R\d+$/.test(name) ? 0 : undefined)
+
+  /**
+   * CYCLE800(_FR, _TC, _ST, _MODE, _X0, _Y0, _Z0, _A, _B, _C, _X1, _Y1, _Z1, _DIR, …)
+   * Swivel plane: frame = TRANS(X0,Y0,Z0) · R · TRANS(X1,Y1,Z1). In axis-by-axis mode the
+   * bits of _MODE give the rotation order (bits 1-0 first axis, 3-2 second, 5-4 third:
+   * 1=X, 2=Y, 3=Z), e.g. 57 = X,Y,Z; 39 = Z,X,Y; 27 = Z,Y,X; 45 = X,Z,Y.
+   * CYCLE800() or _TC = "0" resets. Returns the rotary positioning request, or null.
+   */
+  const applyCycle800 = (args: string[], line: number): ProgramMove['swivel'] | null => {
+    const num = (i: number): number => {
+      const s = (args[i] ?? '').trim()
+      if (s === '') return 0
+      try { return evaluate(s, lookup) } catch (e) {
+        diag.add(line, 'error', `CYCLE800 argument ${i + 1}: ${e instanceof Error ? e.message : String(e)}`)
+        return 0
+      }
+    }
+    const tc = (args[1] ?? '').trim().replace(/^"|"$/g, '')
+    const allEmpty = args.every(a => a.trim() === '')
+    if (allEmpty || tc === '0') {
+      swR = IDENTITY3; swT = [0, 0, 0]; swivelActive = false
+      return null
+    }
+    const fr = num(0)
+    const additive = (num(2) & 1) === 1
+    const mode = num(3)
+    const type = mode & 0b11000000
+    if (type !== 0) {
+      diag.add(line, 'warning', `CYCLE800 _MODE=${mode}: only axis-by-axis rotation (_MODE < 64) is simulated — ignored`, 'CYCLE800 mode')
+      return null
+    }
+    const order = [mode & 3, (mode >> 2) & 3, (mode >> 4) & 3]
+    const angles = [num(7), num(8), num(9)]
+    let R = IDENTITY3
+    order.forEach((ax, i) => {
+      if (ax === 1) R = mul3(R, rotX(angles[i]))
+      else if (ax === 2) R = mul3(R, rotY(angles[i]))
+      else if (ax === 3) R = mul3(R, rotZ(angles[i]))
+      else if (angles[i] !== 0) diag.add(line, 'warning', `CYCLE800 _MODE=${mode} has no axis for angle ${i + 1} — ignored`, 'CYCLE800 order')
+    })
+    const s = (inch ? 25.4 : 1)
+    const x0: [number, number, number] = [num(4) * s, num(5) * s, num(6) * s]
+    const x1: [number, number, number] = [num(10) * s, num(11) * s, num(12) * s]
+    const r1 = apply3(R, x1)
+    const fR = R
+    const fT: [number, number, number] = [x0[0] + r1[0], x0[1] + r1[1], x0[2] + r1[2]]
+    if (additive) {
+      const t = apply3(swR, fT)
+      swT = [swT[0] + t[0], swT[1] + t[1], swT[2] + t[2]]
+      swR = mul3(swR, fR)
+    } else {
+      swR = fR; swT = fT
+    }
+    swivelActive = true
+    if (fr !== 0) diag.add(line, 'info', 'CYCLE800 retraction (_FR) is not simulated — rotary axes swivel from the current position', 'CYCLE800 _FR')
+    const dirRaw = num(13)
+    const dir: -1 | 0 | 1 = dirRaw > 0 ? 1 : dirRaw < 0 ? -1 : 0
+    const z = apply3(swR, [0, 0, 1])
+    return { toolAxis: z, dir }
+  }
 
   const numberOf = (w: Extract<Word, { kind: 'addr' }>, line: number): number | null => {
     if (w.value !== null) return w.value
@@ -265,6 +333,8 @@ export function interpret(text: string, opts: InterpretOptions = {}): InterpretR
     let skipMotion = false
     let frameCmd: string | null = null
     let rpl: number | null = null
+    const orientWords: Partial<Record<'A3' | 'B3' | 'C3', number>> = {}
+    let swivelMove: ProgramMove['swivel'] | null = null
     const selectTool = (key: string) => {
       selectedTool = key
       noteUsed(toolsUsed, key)
@@ -289,6 +359,8 @@ export function interpret(text: string, opts: InterpretOptions = {}): InterpretR
         case 'keyword': {
           const k = w.name
           if (k === 'SUPA') machineCoords = true
+          else if (k === 'TRAORI') traori = true
+          else if (k === 'TRAFOOF') traori = false
           else if (k === 'DIAMON' || k === 'DIAM90') diamon = true
           else if (k === 'DIAMOF') diamon = false
           else if (k === 'MCALL') modalCallPending = true
@@ -308,6 +380,12 @@ export function interpret(text: string, opts: InterpretOptions = {}): InterpretR
         }
         case 'call': {
           const n = w.name
+          if (n === 'TRAORI') { traori = true; break }
+          if (n === 'CYCLE800') {
+            const r = applyCycle800(w.args, line)
+            if (r) swivelMove = r
+            break
+          }
           if (FRAME_KEYWORDS.has(n)) { skipMotion = true; diag.add(line, 'warning', `${n}(…) call form is not supported — use "${n} X… Y…"`, n) }
           else if (LATER[n]) diag.add(line, 'warning', `${n} is not simulated yet — phase ${LATER[n]}${modalCallPending ? ' (modal MCALL: holes at following positions are missing)' : ''}`, n)
           else if (!KNOWN_CALLS_IGNORED.has(n)) diag.add(line, 'warning', `Call ${n}(…) is not simulated — ignored`, `call ${n}`)
@@ -356,6 +434,9 @@ export function interpret(text: string, opts: InterpretOptions = {}): InterpretR
             diag.add(line, 'warning', `"${w.text}": R without "=" — ignored`)
           } else if (/^(AP|RP|RND|CHF|CHR|ANG|RPL)$/.test(L)) {
             diag.add(line, 'warning', `${L}= (polar/chamfer/contour definition) is not supported — ignored`, L)
+          } else if (L === 'A3' || L === 'B3' || L === 'C3') {
+            orientWords[L] = v
+            if (!traori) diag.add(line, 'warning', `${L}= orientation vector without TRAORI — ignored`, 'orient without TRAORI')
           } else if (L.length > 1 && /^[XYZABC]\d+$/.test(L)) {
             diag.add(line, 'warning', `Axis address ${L}= is not mapped — ignored`, `addr ${L}`)
           } else {
@@ -395,11 +476,31 @@ export function interpret(text: string, opts: InterpretOptions = {}): InterpretR
     if (skipMotion) continue
 
     const xf = currentXf(line)
+    const kin: ProgramMove['kin'] = traori ? 'traori' : swivelActive ? 'swivel' : 'none'
+    const programmed = Object.keys(axisWords).join('')
+    const orientKeys = Object.keys(orientWords)
+    let orient: [number, number, number] | undefined
+    if (traori && orientKeys.length > 0) {
+      const v: [number, number, number] = [orientWords.A3 ?? 0, orientWords.B3 ?? 0, orientWords.C3 ?? 0]
+      const len = Math.hypot(...v)
+      if (len < 1e-12) diag.add(line, 'error', 'Orientation vector A3/B3/C3 is zero')
+      else orient = [v[0] / len, v[1] / len, v[2] / len]
+    }
     const baseMove = () => ({
       blockIndex: bi, line,
       feed, feedMode, spindle,
       tool: { T: activeTool, D: tool.D }, workOffset, machineCoords, plane, xf,
+      kin, programmed, ...(orient ? { orient } : {}),
     })
+
+    // ---- CYCLE800 rotary positioning ----
+    if (swivelMove) {
+      moves.push({ ...baseMove(), kind: 'swivel', start: { ...pos }, end: { ...pos }, swivel: swivelMove, programmed: '' })
+      continue
+    }
+    if (kin === 'swivel' && (axisWords.A || axisWords.B || axisWords.C)) {
+      diag.add(line, 'warning', 'Rotary axis programmed while a CYCLE800 plane is active — ignored (rotaries stay swivelled)', 'rotary in swivel')
+    }
 
     // ---- Dwell ----
     if (dwellBlock) {
