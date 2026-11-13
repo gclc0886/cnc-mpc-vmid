@@ -286,6 +286,12 @@ function parseV24Devices(root: Element, config: KinematicConfig) {
   }
 }
 
+/** Rapid traverse rate attribute, if present and positive. */
+function parseRapid(elem: Element): number | undefined {
+  const v = parseFloat(elem.getAttribute('Rapid') || '')
+  return Number.isFinite(v) && v > 0 ? v : undefined
+}
+
 function parseAxisV30(elem: Element): AxisDef {
   const ax: AxisDef = {
     name: elem.getAttribute('Name') || '',
@@ -301,6 +307,7 @@ function parseAxisV30(elem: Element): AxisDef {
       min: parseFloat(elem.getAttribute('MinLim') || '-100000'),
       max: parseFloat(elem.getAttribute('MaxLim') || '100000'),
     },
+    rapid: parseRapid(elem),
   }
 
   if (ax.type === 'rotary') {
@@ -337,6 +344,7 @@ function parseAxisV24(elem: Element): AxisDef {
       min: parseFloat(elem.getAttribute('MinLim') || '-100000'),
       max: parseFloat(elem.getAttribute('MaxLim') || '100000'),
     },
+    rapid: parseRapid(elem),
   }
 
   if (ax.type === 'rotary') {
@@ -446,7 +454,7 @@ function axisToXml(axis: AxisDef, dev: { type: string; id: number; name: string;
     xml += ` CenterX="${axis.center.x}" CenterY="${axis.center.y}" CenterZ="${axis.center.z}"`
   }
   xml += ` HomeRef="${axis.homeRef}" MinLim="${axis.limits.min}" MaxLim="${axis.limits.max}"`
-  xml += ` InterpolationStep="0.001" Rapid="10000" MinSpeed="0" MaxSpeed="5000"`
+  xml += ` InterpolationStep="0.001" Rapid="${axis.rapid ?? 10000}" MinSpeed="0" MaxSpeed="5000"`
   xml += ` Acceleration="2500" Deceleration="2500">`
 
   // Children or Device leaf

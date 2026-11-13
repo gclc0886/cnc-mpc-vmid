@@ -25,7 +25,10 @@ export interface StepInfo {
   line: number | null
   source: string | null
   rapid: boolean
+  /** Effective path speed: mm/min (deg/min for pure rotary moves). */
   feed: number
+  /** Program time at this step, seconds. */
+  time: number
   /** Programmed coordinates at this step (as interpolated from the G-code). */
   programmed: { X: number; Y: number; Z: number; A: number; B: number; C: number }
   /** Physical axis values the active sub-machine maps them to. */
@@ -36,6 +39,24 @@ export interface StepInfo {
   limitViolations: LimitViolationInfo[]
   /** Tool tip, only when `step` is the step currently applied to the machine. */
   tcp: { mcs: Vec3; wcs: Vec3 } | null
+}
+
+export interface DiagnosticInfo {
+  line: number
+  severity: 'error' | 'warning' | 'info'
+  message: string
+}
+
+export interface ParseSummary {
+  totalSteps: number
+  blocks: number
+  /** Estimated program time, seconds. */
+  duration: number
+  dialect: string | null
+  errors: number
+  warnings: number
+  /** First diagnostics (up to 50), sorted by line. */
+  diagnostics: DiagnosticInfo[]
 }
 
 /** method → { params, result } */
@@ -56,7 +77,7 @@ export interface BridgeMethods {
 
   // --- G-code ---
   load_gcode: { params: { gcode: string }; result: Ok }
-  parse_gcode: { params: NoParams; result: { totalSteps: number; blocks: number } }
+  parse_gcode: { params: NoParams; result: ParseSummary }
 
   // --- Animation ---
   play_animation: { params: NoParams; result: Ok }

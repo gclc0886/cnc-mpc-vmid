@@ -24,9 +24,28 @@ describe('playback through the store', () => {
     store().applyStep(last)
     expect(store().chain!.getAxisValue('A')).toBeCloseTo(150, 9)
     expect(store().stepViolations.map(v => v.axis)).toEqual(['A'])
-    store().applyStep(0) // back inside limits
+    // Last sample of the first block (A0→A50 is interpolated in 1° steps), back inside limits
+    const endOfFirst = store().toolPath.findIndex(p => p.blockIndex === 1) - 1
+    store().applyStep(endOfFirst)
     expect(store().chain!.getAxisValue('A')).toBeCloseTo(50, 9)
     expect(store().stepViolations).toEqual([])
+  })
+
+  it('warns when the program uses an axis the sub-machine cannot drive', () => {
+    store().loadPreset('3x')
+    store().setGcode('G1 X10 F100\nG1 A45')
+    store().parseGcode()
+    const d = store().diagnostics.find(x => /A is programmed/.test(x.message))
+    expect(d).toMatchObject({ line: 2, severity: 'warning' })
+  })
+
+  it('times G0 with the rapid rate of the mapped physical axis', () => {
+    const cfg = JSON.parse(JSON.stringify(store().config))
+    cfg.devices[1].axes[0].rapid = 5000 // X on the 5x_ac table
+    store().loadConfig(cfg)
+    store().setGcode('G0 X100')
+    store().parseGcode()
+    expect(store().programDuration).toBeCloseTo(1.2, 9)
   })
 
   it('keeps the same empty violations array while in limits', () => {

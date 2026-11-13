@@ -10,6 +10,8 @@ export interface AxisDef {
   offset?: { x: number; y: number; z: number }
   homeRef: number
   limits: { min: number; max: number }
+  /** Rapid traverse rate from VMID: mm/min (linear) or deg/min (rotary). */
+  rapid?: number
   children?: AxisDef[]
 }
 

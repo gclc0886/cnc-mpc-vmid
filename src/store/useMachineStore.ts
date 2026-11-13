@@ -1,8 +1,8 @@
 import { create } from 'zustand'
 import { KinematicChain } from '../engine/KinematicChain'
 import type { KinematicConfig, AxisDef, LimitViolation } from '../engine/KinematicChain'
-import { GCodeParser } from '../engine/GCodeParser'
-import type { SimPoint, GCodeBlock } from '../engine/GCodeParser'
+import { parseProgram } from '../engine/GCodeParser'
+import type { SimPoint, GCodeBlock, Diagnostic, AxisLetter, Dialect } from '../engine/GCodeParser'
 import { buildAxisMapping, mapPointToAxes } from '../engine/AxisMapping'
 import type { AxisMapping } from '../engine/AxisMapping'
 import { PRESETS } from '../presets/machinePresets'
@@ -19,6 +19,12 @@ interface MachineStore {
   gcode: string
   parsedBlocks: GCodeBlock[]
   toolPath: SimPoint[]
+  /** Interpreter messages from the last parse (unsupported words, arc errors, missing F …). */
+  diagnostics: Diagnostic[]
+  /** Estimated program time of the last parse, seconds. */
+  programDuration: number
+  /** Controller dialect detected in the last parse. */
+  gcodeDialect: Dialect | null
   currentStep: number
   isPlaying: boolean
   playbackSpeed: number  // steps per frame (1=slow, 2, 5, 10, 20=fast)
@@ -107,6 +113,9 @@ export const useMachineStore = create<MachineStore>((set, get) => ({
   gcode: DEFAULT_GCODE,
   parsedBlocks: [],
   toolPath: [],
+  diagnostics: [],
+  programDuration: 0,
+  gcodeDialect: null,
   currentStep: 0,
   isPlaying: false,
   playbackSpeed: 2,
@@ -143,7 +152,7 @@ export const useMachineStore = create<MachineStore>((set, get) => ({
       axisMapping: buildAxisMapping(config, chain, combId),
       ...(preserveState
         ? {}
-        : { toolPath: [], parsedBlocks: [], currentStep: 0, isPlaying: false, selectedNode: null, stepViolations: [] }),
+        : { toolPath: [], parsedBlocks: [], diagnostics: [], programDuration: 0, currentStep: 0, isPlaying: false, selectedNode: null, stepViolations: [] }),
       version: get().version + 1,
     })
   },
@@ -169,11 +178,32 @@ export const useMachineStore = create<MachineStore>((set, get) => ({
   setGcode: (gcode) => set({ gcode }),
 
   parseGcode: () => {
-    const { gcode } = get()
-    const parser = new GCodeParser()
-    parser.parse(gcode)
-    const points = parser.interpolate(1.0)
-    set({ parsedBlocks: parser.blocks, toolPath: points, currentStep: 0, isPlaying: false, stepViolations: [] })
+    const { gcode, chain, axisMapping } = get()
+    // Rapid rates of the physical axes each programmed letter drives (for G0 timing)
+    const rapid: Partial<Record<AxisLetter, number>> = {}
+    if (chain && axisMapping) {
+      const letters: AxisLetter[][] = [['X', 'Y', 'Z'], ['A', 'B', 'C']]
+      ;[axisMapping.linear, axisMapping.rotary].forEach((names, g) => names.forEach((name, i) => {
+        const r = name ? chain.nodes.get(name)?.axis.rapid : undefined
+        if (r) rapid[letters[g][i]] = r
+      }))
+    }
+    const res = parseProgram(gcode, { rapid })
+    const diagnostics = [...res.diagnostics]
+    // Programmed axes the active sub-machine cannot drive — their motion is silently lost otherwise
+    if (axisMapping) {
+      const driven = describeDriven(axisMapping)
+      for (const [letter, line] of Object.entries(res.usedAxes)) {
+        if (!driven.has(letter)) {
+          diagnostics.push({ line: line!, severity: 'warning', message: `${letter} is programmed but the active sub-machine has no axis mapped to it — ${letter} moves are not shown` })
+        }
+      }
+      diagnostics.sort((a, b) => (a.line || Infinity) - (b.line || Infinity))
+    }
+    set({
+      parsedBlocks: res.blocks, toolPath: res.points, diagnostics, programDuration: res.duration,
+      gcodeDialect: res.dialect, currentStep: 0, isPlaying: false, stepViolations: [],
+    })
   },
 
   setCurrentStep: (step) => set({ currentStep: step }),
@@ -342,6 +372,14 @@ export const useMachineStore = create<MachineStore>((set, get) => ({
     if (config) get().loadConfig(config, true)
   },
 }))
+
+/** Programmed letters that the mapping drives. */
+function describeDriven(m: AxisMapping): Set<string> {
+  const s = new Set<string>()
+  ;['X', 'Y', 'Z'].forEach((l, i) => { if (m.linear[i]) s.add(l) })
+  ;['A', 'B', 'C'].forEach((l, i) => { if (m.rotary[i]) s.add(l) })
+  return s
+}
 
 function countAxes(config: KinematicConfig): number {
   let count = 0

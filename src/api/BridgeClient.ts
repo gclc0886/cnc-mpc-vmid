@@ -149,6 +149,7 @@ function buildStepInfo(stepArg?: number): StepInfo {
     source: block?.raw ?? null,
     rapid: pt.rapid,
     feed: pt.feed,
+    time: pt.t,
     programmed: { X: pt.x, Y: pt.y, Z: pt.z, A: pt.a, B: pt.b, C: pt.c },
     axes,
     mapping: mapping ? describeMapping(mapping) : {},
@@ -244,7 +245,15 @@ const handlers: Handlers = {
   parse_gcode: () => {
     store().parseGcode()
     const s = store()
-    return { totalSteps: s.toolPath.length, blocks: s.parsedBlocks.length }
+    return {
+      totalSteps: s.toolPath.length,
+      blocks: s.parsedBlocks.length,
+      duration: s.programDuration,
+      dialect: s.gcodeDialect,
+      errors: s.diagnostics.filter(d => d.severity === 'error').length,
+      warnings: s.diagnostics.filter(d => d.severity === 'warning').length,
+      diagnostics: s.diagnostics.slice(0, 50),
+    }
   },
 
   // --- Animation ---

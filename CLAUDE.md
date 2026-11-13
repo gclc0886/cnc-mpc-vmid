@@ -24,7 +24,11 @@ Claude Code  <-->  MCP Server (stdio, Node.js)
 - **Bridge Client**: `src/api/BridgeClient.ts` — browser-side WS client, dispatches commands to Zustand store
 - **Store**: `src/store/useMachineStore.ts` — central state (config, chain, toolPath, playback, activeCombination)
 - **Engine**: `src/engine/KinematicChain.ts` — forward kinematics, matrix math, types for Combinations/Channels/AccessPatterns
-- **Parser**: `src/engine/GCodeParser.ts` — G0/G1/G2/G3, IJK/R/CR= arcs
+- **G-code**: `src/engine/GCodeParser.ts` is a facade (`parseProgram`) over `src/engine/gcode/`:
+  `Lexer` (words, calls, strings, `detectDialect` Sinumerik/Fanuc) → `Interpreter` (modal groups G0-3, G17-19,
+  G90/91, G93/94/95, G54…, G70/71/700/710, DIAMON, AC/IC/DC/ACP/ACN, R-params, G4, M2/M30; arcs IJK/CR=/R/TURN=;
+  `Diagnostic`s for everything not simulated, naming the phase that adds it) → `Interpolator` (1 mm / 1° steps,
+  time per sample from F, G0 per-axis `Rapid` from VMID, G93/G95). Frames, tool length, TRAORI, cycles: not yet (phases 1b–1d)
 - **VMID**: `src/engine/VMIDLoader.ts` — import/export SolidCAM VMID format (Ver 24-58), parses sub-machines, channels, access patterns
 - **3D**: `src/visualization/MachineModel.tsx` — recursive node tree, spindle+tool, protractor discs
 
@@ -153,7 +157,7 @@ The VMID loader (`VMIDLoader.ts`) handles SolidCAM Virtual Machine ID format:
 |------|--------|--------|
 | `load_gcode` | `gcode`: string | Load G-code into editor |
 | `load_gcode_file` | `path`, `parse?` | Read a program from disk (UTF-8/Windows-1251), parse by default |
-| `parse_gcode` | — | Parse & generate toolpath → `{totalSteps, blocks}` |
+| `parse_gcode` | — | Parse & generate toolpath → `{totalSteps, blocks, duration, dialect, errors, warnings, diagnostics[]}` |
 | `play_animation` | — | Start playback |
 | `pause_animation` | — | Pause playback |
 | `set_animation_step` | `step`: int | Pause, move the machine to the step, return the same info as `get_step_info` + TCP |
@@ -225,6 +229,7 @@ add_device(device={name:"Spindle X", type:"spindle", axes:[{name:"W", type:"line
 
 - `npm test` — unit tests (Vitest), `npm run typecheck` — app types, `npx tsc -p mcp-server/tsconfig.json` — MCP server types.
 - `CNC_VMID_CORPUS=C:\POSTs npm test` — also parses every real VMID in that folder and prints a summary of known loader gaps. VMIDs stay out of the repo.
+- `CNC_GCODE_CORPUS="C:\CLAUDE-MCP\sinumeric-4x;C:\CLAUDE-MCP\Experiment\G-codes"` — interprets real programs (`;`-separated dirs or files); fails on any interpreter error, prints a warning summary. Programs stay out of the repo.
 - Roadmap and known defects: `docs/UPGRADE_PLAN.md`.
 - **App crashes on add_axis**: Check that `vector` uses `{x,y,z}` format, not array `[x,y,z]`
 - **Machine disappears after config edit**: Fixed — `loadConfig(config, true)` preserves state

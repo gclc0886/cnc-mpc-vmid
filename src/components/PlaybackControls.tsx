@@ -9,10 +9,57 @@ const SPEED_OPTIONS = [
   { label: '10x', value: 20 },
 ]
 
+function formatTime(seconds: number): string {
+  const s = Math.max(0, Math.round(seconds))
+  const h = Math.floor(s / 3600)
+  const m = Math.floor((s % 3600) / 60)
+  const ss = String(s % 60).padStart(2, '0')
+  return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`
+}
+
+/** Jump playback to the first sample produced by a given source line (or the next one after it). */
+function jumpToLine(line: number) {
+  const { toolPath, parsedBlocks, applyStep, setIsPlaying } = useMachineStore.getState()
+  const idx = toolPath.findIndex(p => (parsedBlocks[p.blockIndex]?.line ?? 0) >= line)
+  if (idx >= 0) { setIsPlaying(false); applyStep(idx) }
+}
+
+function DiagnosticsList() {
+  const { diagnostics, gcodeDialect, programDuration, toolPath } = useMachineStore()
+  if (toolPath.length === 0 && diagnostics.length === 0) return null
+  const errors = diagnostics.filter(d => d.severity === 'error').length
+  const warnings = diagnostics.filter(d => d.severity === 'warning').length
+  const color = errors ? '#ff5252' : warnings ? '#ffb74d' : '#81c784'
+  return (
+    <details className="playback-diagnostics" open={errors > 0}>
+      <summary>
+        <span>{gcodeDialect === 'fanuc' ? 'Fanuc' : 'Sinumerik'} · {formatTime(programDuration)}</span>
+        <span style={{ color }}>
+          {errors || warnings ? `${errors} err · ${warnings} warn` : 'no issues'}
+        </span>
+      </summary>
+      {diagnostics.length > 0 && (
+        <ul>
+          {diagnostics.slice(0, 200).map((d, i) => (
+            <li
+              key={i}
+              className={`diag-${d.severity}`}
+              onClick={() => d.line > 0 && jumpToLine(d.line)}
+              title={d.line > 0 ? 'Jump to this line' : undefined}
+            >
+              {d.line > 0 && <b>L{d.line}</b>} {d.message}
+            </li>
+          ))}
+        </ul>
+      )}
+    </details>
+  )
+}
+
 export function PlaybackControls() {
   const {
     toolPath, currentStep, isPlaying, playbackSpeed, config,
-    activeCombinationId,
+    activeCombinationId, programDuration,
     setIsPlaying, setPlaybackSpeed, applyStep, parseGcode,
     setActiveCombination,
   } = useMachineStore()
@@ -172,7 +219,10 @@ export function PlaybackControls() {
           <div className="playback-info">
             <span>Step {currentStep}/{totalSteps - 1} ({pct}%)</span>
             <span>Line {blockLine}</span>
-            <span>{isRapid ? 'G0 Rapid' : `F${feedRate}`}</span>
+            <span>{isRapid ? 'G0 Rapid' : `F${Math.round(feedRate)}`}</span>
+          </div>
+          <div className="playback-info">
+            <span>Time {formatTime(currentPt?.t ?? 0)} / {formatTime(programDuration)}</span>
           </div>
           {/* Rotary angles & angular velocity */}
           {config && config.rotaryAxes.length > 0 && currentPt && (() => {
@@ -214,6 +264,8 @@ export function PlaybackControls() {
       {totalSteps === 0 && (
         <div className="playback-empty">Parse G-Code to enable playback</div>
       )}
+
+      <DiagnosticsList />
     </div>
   )
 }

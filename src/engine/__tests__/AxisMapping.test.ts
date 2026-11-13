@@ -6,7 +6,7 @@ import type { SimPoint } from '../GCodeParser'
 
 const clone = <T>(x: T): T => JSON.parse(JSON.stringify(x))
 const pt = (p: Partial<SimPoint>): SimPoint =>
-  ({ x: 0, y: 0, z: 0, a: 0, b: 0, c: 0, feed: 100, rapid: false, blockIndex: 0, ...p })
+  ({ x: 0, y: 0, z: 0, a: 0, b: 0, c: 0, feed: 100, rapid: false, blockIndex: 0, t: 0, ...p })
 
 describe('buildAxisMapping', () => {
   it('resolves the combination axis order by ID', () => {
