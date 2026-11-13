@@ -126,7 +126,7 @@ endp
 
 **Diagnosis:** dump variables (see "Diagnostic dump" below). Seen values at the cut point of face 1:
 `zpos=-48.493 ypos=0` | `zhpos=47.433 yhpos=-10.082` | `rotate_angle_x=first_axis_angle=168`.
-`(yhpos, zhpos)` of the cut and retract points lie on one ray at −12° (radius 48.493 and 90) → the slot is at part angle θ−180. Checking the VMID kinematics (CNC-Trainer: tool at top, which part point is under it for a given A) gave A=12 = 180−θ.
+`(yhpos, zhpos)` of the cut and retract points lie on one ray at −12° (radius 48.493 and 90) → the slot is at part angle θ−180. With a right-hand table rotation about +X, A = part angle to bring under the tool = θ−180 = −12 → A348. (First derived as A=12 from CNC-Trainer, whose `Matrix4x4.inverse()` did not invert rotations — mirrored; the symmetric rotor hid it.)
 
 **The side is per CAM job, not per machine.** A second part (hex prism, spiral-milled holes on 6 faces) had the tool on the face CS **+Z** side. A hardcoded flip turned that program into a crash (all Z negative). So the post must decide per face.
 
@@ -134,10 +134,10 @@ endp
 
 | Face CS | Y | Z | A | G41/G42 |
 |---|---|---|---|---|
-| tool on +Z (`zpos > 0` at clearance) | `ypos` | `zpos` | `-angle` | as is |
-| tool on −Z (`zpos < 0` at clearance) | `-ypos` | `-zpos` | `180 - angle` | swapped (Y mirrored) |
+| tool on +Z (`zpos > 0` at clearance) | `ypos` | `zpos` | `angle` | as is |
+| tool on −Z (`zpos < 0` at clearance) | `-ypos` | `-zpos` | `angle - 180` | swapped (Y mirrored) |
 
-A sign verified against VMID kinematics (A about +X); flipped row also verified numerically from the `;DBG` dump, normal row derived (not yet dumped).
+A = angle of the part point brought under the tool (`(yhpos,zhpos) = R·(sin φ, cos φ)`), table turning right-hand about +X. This is the same convention as SolidCAM's own machine angle `apos` in wrapping (dump: `apos=202.051` ↔ `hpos=(-13.139,-32.437)`), so indexing and wrapping agree. Both rows checked numerically on dumps (hex, rotor, cylinder part). Not yet checked on the real machine (MDI `G0 A90`).
 
 **A range (non-modulo axis, DMC635):** indexing outputs the absolute face angle normalized to 0…360, no accumulation (so the table may run back almost a full turn, e.g. `A348 → A0`); wrapping accumulates via `dapos` up to the 3600 limit. The axis counter lives in the control: a post can't "reset" it without motion except with `PRESETON` (rejected by the user).
 
@@ -152,10 +152,10 @@ A sign verified against VMID kinematics (A about +X); flipped row also verified 
     rot_pending = false
     if zpos < 0 then
       flip_yz = true
-      fourth_axis = 180 - face_angle
+      fourth_axis = face_angle - 180
     else
       flip_yz = false
-      fourth_axis = 0 - face_angle
+      fourth_axis = face_angle
     endif
     while fourth_axis < 0
       fourth_axis = fourth_axis + 360
@@ -183,7 +183,7 @@ A sign verified against VMID kinematics (A about +X); flipped row also verified 
 ```
 `@arc` must call `@calc_clean_4axis` and output `y_calc/z_calc` too (shared `change()` tracking with `@line`), reverse G2/G3 in XY/ZX when `flip_yz` (YZ: both axes flip = rotation, direction kept), and negate J for thread arcs. `@compensation`: swap G41/G42 when `flip_yz`.
 
-Results: rotor (−Z side) `G0 A12` → `G0 X-6 Z90` → `G1 Z48.493` → `G1 X25`, A 12…348, 0; hex (+Z side) `G0 A0` → `X25.924 Y1.2 Z50` → helix down to Z≈9.9, A 0→60→…→300.
+Results: rotor (−Z side) `G0 A12` → `G0 X-6 Z90` → `G1 Z48.493` → `G1 X25`, A 348, 336 … 0 (first face rot_x=168 → A348); hex (+Z side) `G0 A0` → `X25.924 Y1.2 Z50` → helix down to Z≈9.9, A 0, 300, 240 … 60 (A = first_axis_angle).
 
 **Do NOT** output `yhpos/zhpos` here — they are part coordinates at A=0, so Y appears and the plunge becomes a tilted Y+Z line.
 
@@ -435,7 +435,7 @@ Remove after diagnosis. Don't guess variable semantics from names — dump them.
 
 ### Verify rotary direction against VMID kinematics
 
-Load the VMID in CNC-Trainer (MCP): put the tool at the top (`Z=50`), set `A`, read `get_tool_position` → `wcs` shows which part point is under the tool for that A. This tells the A sign convention without touching the machine.
+Ground truth is the dump, not a simulator: in a wrapping op `apos` is SolidCAM's machine angle and `(yhpos,zhpos)` gives the part angle φ of the same point — their relation is the A convention (here A = φ). Indexing must use the same sign. A third-party kinematic model can be wrong: CNC-Trainer's `Matrix4x4.inverse()` returned a non-inverted rotation and showed the table turning the mirrored way, which produced wrong formulas that symmetric test parts did not expose. Cross-check two sources and the real machine.
 
 ### Compare Input vs Output
 
@@ -459,7 +459,8 @@ Load the VMID in CNC-Trainer (MCP): put the tool at the top (`Z=50`), set `A`, r
 - [ ] CYCLE83 parameters not in 840D order
 - [ ] `change(var) = true` set before a later assignment of the same value (flag lost)
 - [ ] Indexed A accumulating across tools (A372, A720…) instead of absolute 0…360
-- [ ] Wrapping A sign/start never checked against kinematics (indexing needed `A = -angle`; wrapping uses `+Σdapos` — verify with a dump)
+- [ ] Indexing and wrapping using opposite A sign conventions (compare `apos` vs `hpos` angle in a dump; test a part with both op types)
+- [ ] First wrapping move after an indexed op: `dapos` is relative to SolidCAM's previous `apos`, start from absolute `apos` instead
 - [ ] No safe Z retract before A rotation
 - [ ] Outputting A in every block (should be only on face change)
 - [ ] Spurious A-0, A-360 commands
