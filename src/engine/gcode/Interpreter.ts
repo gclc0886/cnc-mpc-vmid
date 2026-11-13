@@ -1,4 +1,6 @@
 import { lexProgram, detectDialect } from './Lexer'
+import { expandSinumerikCycle, expandFanucCycle, holePattern, SINUMERIK_CYCLES } from './Cycles'
+import type { CycleStep, CycleIssue } from './Cycles'
 import { evaluate, ExpressionError } from './Expression'
 import {
   IDENTITY3, ZERO_OFFSETS, apply3, fromMachine, mul3, rotInPlane, rotRPY, rotX, rotY, rotZ, toMachine, toolVector,
@@ -63,10 +65,10 @@ const IGNORED_G_FANUC = new Set([40, 49, 80, 98, 99, 15, 50, 67, 69, 64, 61, 8, 
 
 /** Fanuc codes recognised but not simulated yet. */
 const LATER_G_FANUC: Record<number, string> = {
-  81: '1d (drilling cycles)', 82: '1d (drilling cycles)',
-  83: '1d (drilling cycles)', 84: '1d (drilling cycles)', 85: '1d (drilling cycles)', 86: '1d (drilling cycles)',
-  73: '1d (drilling cycles)', 76: '1d (drilling cycles)',
 }
+
+/** Fanuc canned cycles handled by Cycles.expandFanucCycle (group 09). */
+const FANUC_CYCLES = new Set([73, 81, 82, 83, 84, 85, 86, 89])
 
 /** Keywords accepted silently (motion smoothing, look-ahead, etc.). */
 const IGNORED_KEYWORDS = new Set([
@@ -88,10 +90,6 @@ const FLOW_KEYWORDS = new Set([
 /** Features recognised but not simulated yet → warning naming the phase that adds them. */
 const LATER: Record<string, string> = {
   TRANSMIT: 'Mill-Turn (TRANSMIT)', TRACYL: 'Mill-Turn (TRACYL)',
-  CYCLE81: '1d (drilling cycles)', CYCLE82: '1d (drilling cycles)', CYCLE83: '1d (drilling cycles)',
-  CYCLE84: '1d (drilling cycles)', CYCLE840: '1d (drilling cycles)', CYCLE85: '1d (drilling cycles)',
-  CYCLE86: '1d (drilling cycles)', CYCLE87: '1d (drilling cycles)', CYCLE88: '1d (drilling cycles)',
-  CYCLE89: '1d (drilling cycles)', HOLES1: '1d (hole patterns)', HOLES2: '1d (hole patterns)',
   IF: '1e (program flow)', ELSE: '1e (program flow)', ENDIF: '1e (program flow)', GOTO: '1e (program flow)',
   GOTOF: '1e (program flow)', GOTOB: '1e (program flow)', GOTOC: '1e (program flow)', WHILE: '1e (program flow)',
   ENDWHILE: '1e (program flow)', FOR: '1e (program flow)', ENDFOR: '1e (program flow)', LOOP: '1e (program flow)',
@@ -160,6 +158,14 @@ export function interpret(text: string, opts: InterpretOptions = {}): InterpretR
   let swT: [number, number, number] = [0, 0, 0]
   let swivelActive = false
   let traori = false
+
+  // ---- Drilling cycles ----
+  /** Sinumerik MCALL modal cycle: runs after every block with motion until MCALL alone. */
+  let modalCycle: { name: string; args: (number | undefined)[]; line: number; used: boolean } | null = null
+  /** Fanuc canned cycle state (G73/G81…G89 modal until G80 or a G0–G3). */
+  let fanucCycle: { code: number; initial: number | null; r?: number; z?: number; q?: number; p?: number } | null = null
+  let fanucReturnToR = false
+  let fanucCycleThisBlock = false
   // Tool becomes active on M6 when the program uses M6, otherwise as soon as T is programmed
   const usesM6 = blocks.some(b => b.words.some(w => w.kind === 'addr' && w.letter === 'M' && w.value === 6))
   let selectedTool: string | null = null
@@ -170,10 +176,17 @@ export function interpret(text: string, opts: InterpretOptions = {}): InterpretR
   const workOffsetsUsed: string[] = []
   const noteUsed = (list: string[], k: string) => { if (!list.includes(k)) list.push(k) }
   const warnedOnce = new Set<string>()
-  const warnOnce = (key: string, line: number, message: string) => {
+  const warnOnce = (key: string, line: number, message: string, severity: Severity = 'warning') => {
     if (warnedOnce.has(key)) return
     warnedOnce.add(key)
-    diag.add(line, 'warning', message, key)
+    diag.add(line, severity, message, key)
+  }
+
+  const reportCycleIssues = (issues: CycleIssue[], line: number, key: string) => {
+    for (const i of issues) warnOnce(`${key} ${i.message}`, line, i.message, i.severity)
+  }
+  const warnUnusedCycle = (c: { name: string; line: number }) => {
+    diag.add(c.line, 'warning', `MCALL ${c.name} was cancelled before any block with motion — no hole drilled (the block after MCALL needs X/Y)`, 'mcall unused')
   }
 
   const offsetFor = (name: string, line: number): AxisOffsets => {
@@ -285,12 +298,27 @@ export function interpret(text: string, opts: InterpretOptions = {}): InterpretR
     // ---- Pass 1: G-codes (modal changes take effect in this block) ----
     let dwellBlock = false
     let machineCoords = false
+    fanucCycleThisBlock = false
     for (const w of b.words) {
       if (w.kind !== 'addr' || w.letter !== 'G') continue
       const g = numberOf(w, line)
       if (g === null) continue
+      if (dialect === 'fanuc' && FANUC_CYCLES.has(g)) {
+        if (!fanucCycle) fanucCycle = { code: g, initial: null }
+        else fanucCycle.code = g
+        fanucCycleThisBlock = true
+        continue
+      }
+      if (dialect === 'fanuc' && (g === 80 || g === 98 || g === 99)) {
+        if (g === 80) fanucCycle = null
+        else fanucReturnToR = g === 99
+        continue
+      }
       switch (g) {
-        case 0: case 1: case 2: case 3: motion = g; break
+        case 0: case 1: case 2: case 3:
+          motion = g
+          if (dialect === 'fanuc') fanucCycle = null // a group-01 code cancels a canned cycle
+          break
         case 4: dwellBlock = true; break
         case 17: case 18: case 19: plane = g; break
         case 90: absolute = true; break
@@ -335,6 +363,20 @@ export function interpret(text: string, opts: InterpretOptions = {}): InterpretR
     let rpl: number | null = null
     const orientWords: Partial<Record<'A3' | 'B3' | 'C3', number>> = {}
     let swivelMove: ProgramMove['swivel'] | null = null
+    let cycleNow: { name: string; args: (number | undefined)[] } | null = null
+    let holes: [number, number][] | null = null
+    let cycleCallInBlock = false
+    let fanucR: number | undefined
+    let fanucQ: number | undefined
+    let fanucP: number | undefined
+    const evalArgs = (args: string[]): (number | undefined)[] => args.map((s, i) => {
+      const t = s.trim()
+      if (t === '' || t.startsWith('"')) return undefined
+      try { return evaluate(t, lookup) } catch (e) {
+        diag.add(line, 'error', `Argument ${i + 1}: ${e instanceof Error ? e.message : String(e)}`)
+        return undefined
+      }
+    })
     const selectTool = (key: string) => {
       selectedTool = key
       noteUsed(toolsUsed, key)
@@ -381,6 +423,27 @@ export function interpret(text: string, opts: InterpretOptions = {}): InterpretR
         case 'call': {
           const n = w.name
           if (n === 'TRAORI') { traori = true; break }
+          if (SINUMERIK_CYCLES.has(n)) {
+            cycleCallInBlock = true
+            const args = evalArgs(w.args)
+            if (modalCallPending) {
+              if (modalCycle && !modalCycle.used) warnUnusedCycle(modalCycle)
+              modalCycle = { name: n, args, line, used: false }
+              // Check the parameters now: a wrong order shows up even if no hole follows
+              const probe = expandSinumerikCycle(n, args, { feed: feed || 100, spindle, w: 0 })
+              reportCycleIssues(probe?.issues ?? [], line, `${n}@${line}`)
+            } else {
+              cycleNow = { name: n, args }
+            }
+            break
+          }
+          if (n === 'HOLES1' || n === 'HOLES2') {
+            const r = holePattern(n, evalArgs(w.args))
+            reportCycleIssues(r.issues, line, `${n}@${line}`)
+            holes = r.points
+            if (!modalCycle && !modalCallPending) diag.add(line, 'warning', `${n} without an active MCALL cycle — the tool only visits the positions`, 'holes no mcall')
+            break
+          }
           if (n === 'CYCLE800') {
             const r = applyCycle800(w.args, line)
             if (r) swivelMove = r
@@ -403,6 +466,11 @@ export function interpret(text: string, opts: InterpretOptions = {}): InterpretR
             axisWords[L as AxisLetter] = { value: v, mode: w.mode, line }
           } else if (L === 'I' || L === 'J' || L === 'K') {
             center[L] = { value: v, mode: w.mode, line }
+          } else if (L === 'R' && dialect === 'fanuc' && fanucCycle) {
+            fanucR = v * (inch ? 25.4 : 1)
+          } else if ((L === 'Q' || L === 'P') && dialect === 'fanuc') {
+            if (L === 'Q') fanucQ = v * (inch ? 25.4 : 1)
+            else fanucP = v
           } else if (L === 'CR' || (L === 'R' && dialect === 'fanuc')) {
             radius = v
           } else if (L === 'TURN') {
@@ -446,6 +514,12 @@ export function interpret(text: string, opts: InterpretOptions = {}): InterpretR
       }
     }
 
+    // ---- MCALL alone: end of the modal cycle ----
+    if (modalCallPending && !cycleCallInBlock) {
+      if (modalCycle && !modalCycle.used) warnUnusedCycle(modalCycle)
+      modalCycle = null
+    }
+
     // ---- Frame statements (TRANS/ATRANS/ROT/AROT …) ----
     if (frameCmd) {
       const val = (L: AxisLetter) => axisWords[L]?.value ?? 0
@@ -474,6 +548,21 @@ export function interpret(text: string, opts: InterpretOptions = {}): InterpretR
     }
 
     if (skipMotion) continue
+
+    // ---- Fanuc canned cycle: the tool-axis word is the depth, X/Y only position ----
+    let fanucRun = false
+    const savedMotion: 0 | 1 | 2 | 3 = motion
+    if (dialect === 'fanuc' && fanucCycle && !dwellBlock) {
+      const TL = TOOL_LETTER[plane]
+      const zw = axisWords[TL]
+      if (zw) { fanucCycle.z = zw.value * (inch ? 25.4 : 1); delete axisWords[TL] }
+      if (fanucR !== undefined) fanucCycle.r = fanucR
+      if (fanucQ !== undefined) fanucCycle.q = fanucQ
+      if (fanucP !== undefined) fanucCycle.p = fanucP
+      if (fanucCycle.initial === null) fanucCycle.initial = pos[TOOL_KEY[plane]]
+      fanucRun = fanucCycleThisBlock || Object.keys(axisWords).length > 0
+      motion = 0 // positioning between holes is rapid
+    }
 
     const xf = currentXf(line)
     const kin: ProgramMove['kin'] = traori ? 'traori' : swivelActive ? 'swivel' : 'none'
@@ -505,14 +594,19 @@ export function interpret(text: string, opts: InterpretOptions = {}): InterpretR
     // ---- Dwell ----
     if (dwellBlock) {
       let seconds: number | null = null
-      if (dwellF !== null) seconds = dwellF
+      if (dialect === 'fanuc') {
+        // Fanuc: G4 P<ms> or G4 X<s>
+        if (fanucP !== undefined) seconds = fanucP / 1000
+        else if (axisWords.X) seconds = axisWords.X.value
+      } else if (dwellF !== null) seconds = dwellF
       else if (dwellS !== null && spindle > 0) seconds = (dwellS / spindle) * 60
-      if (seconds === null) diag.add(line, 'error', 'G4 without F (seconds) or S (revolutions)')
+      if (seconds === null) diag.add(line, 'error', dialect === 'fanuc' ? 'G4 without P (ms) or X (s)' : 'G4 without F (seconds) or S (revolutions)')
       else moves.push({ ...baseMove(), kind: 'dwell', start: { ...pos }, end: { ...pos }, dwell: seconds })
       continue
     }
 
-    // ---- Target position ----
+    // ---- Motion of this block; returns whether the block traversed (programmed axes) ----
+    const moved = ((): boolean => {
     let end: Pos6 = { ...pos }
     let hasAxis = false
 
@@ -537,7 +631,7 @@ export function interpret(text: string, opts: InterpretOptions = {}): InterpretR
         moves.push({ ...baseMove(), kind: motion === 0 ? 'rapid' : 'linear', start: { ...pos }, end })
         Object.assign(pos, end)
       }
-      continue
+      return hasAxis
     }
 
     for (const L of AXES) {
@@ -572,7 +666,7 @@ export function interpret(text: string, opts: InterpretOptions = {}): InterpretR
     const hasCenter = center.I !== undefined || center.J !== undefined || center.K !== undefined
     const isArc = motion === 2 || motion === 3
     // No axis words → no motion, except a full circle programmed with centre words only ("G2 I-10")
-    if (!hasAxis && !(isArc && hasCenter)) continue
+    if (!hasAxis && !(isArc && hasCenter)) return false
 
     // ---- Feed checks ----
     if (motion !== 0 && feed <= 0 && !feedWarned) {
@@ -586,7 +680,7 @@ export function interpret(text: string, opts: InterpretOptions = {}): InterpretR
     if (!isArc) {
       moves.push({ ...baseMove(), kind: motion === 0 ? 'rapid' : 'linear', start: { ...pos }, end })
       Object.assign(pos, end)
-      continue
+      return true
     }
 
     // ---- Arc ----
@@ -595,10 +689,69 @@ export function interpret(text: string, opts: InterpretOptions = {}): InterpretR
       moves.push({ ...baseMove(), kind: 'arc', start: { ...pos }, end, arc })
     }
     Object.assign(pos, end)
+    return true
+    })()
+    motion = savedMotion
+
+    // ---- Cycles after the motion ----
+    const runCycle = (steps: CycleStep[]) => {
+      const k = TOOL_KEY[plane]
+      const L = TOOL_LETTER[plane]
+      for (const st of steps) {
+        if (st.kind === 'dwell') {
+          moves.push({ ...baseMove(), kind: 'dwell', start: { ...pos }, end: { ...pos }, dwell: st.seconds, programmed: '' })
+          continue
+        }
+        if (Math.abs(st.w - pos[k]) < 1e-9) continue
+        const end: Pos6 = { ...pos, [k]: st.w }
+        moves.push({
+          ...baseMove(), kind: st.kind === 'rapid' ? 'rapid' : 'linear', start: { ...pos }, end, programmed: L,
+          ...(st.kind === 'linear' ? { feed: st.feed, feedMode: 'G94' as const } : {}),
+        })
+        Object.assign(pos, end)
+      }
+    }
+    const feedMmMin = feedMode === 'G95' ? feed * spindle : feed
+    const runSinumerik = (c: { name: string; args: (number | undefined)[] }, key: string) => {
+      const r = expandSinumerikCycle(c.name, c.args, { feed: feedMmMin, spindle, w: pos[TOOL_KEY[plane]] })
+      if (!r) return
+      reportCycleIssues(r.issues, line, key)
+      runCycle(r.steps)
+    }
+    if (moved && modalCycle) { modalCycle.used = true; runSinumerik(modalCycle, `${modalCycle.name}@${modalCycle.line}`) }
+    if (cycleNow) runSinumerik(cycleNow, `${cycleNow.name}@${line}`)
+    if (holes) {
+      const [uk, vk] = PLANE_AXES[plane]
+      for (const [u, v] of holes) {
+        const end: Pos6 = { ...pos, [uk]: u, [vk]: v }
+        moves.push({ ...baseMove(), kind: 'rapid', start: { ...pos }, end, programmed: (uk + vk).toUpperCase() })
+        Object.assign(pos, end)
+        if (modalCycle) { modalCycle.used = true; runSinumerik(modalCycle, `${modalCycle.name}@${modalCycle.line}`) }
+      }
+    }
+    if (fanucRun && fanucCycle) {
+      const fc = fanucCycle
+      if (fc.z === undefined || fc.r === undefined) {
+        diag.add(line, 'error', `G${fc.code}: ${fc.z === undefined ? 'Z (depth)' : 'R (R plane)'} not programmed`, `fanuc cycle params ${fc.code}`)
+      } else {
+        const initial = fc.initial ?? pos[TOOL_KEY[plane]]
+        const r = absolute ? fc.r : initial + fc.r
+        const z = absolute ? fc.z : r + fc.z
+        const res = expandFanucCycle({
+          code: fc.code, r, z, initial, returnToR: fanucReturnToR, q: fc.q, p: fc.p, feed: feedMmMin, spindle,
+        })
+        reportCycleIssues(res.issues, line, `G${fc.code}@${line}`)
+        runCycle(res.steps)
+      }
+    }
   }
 
   return { blocks, moves, diagnostics: diag.finish(), usedAxes, ended, dialect, toolsUsed, workOffsetsUsed }
 }
+
+/** Tool axis per working plane (drilling cycles, tool length). */
+const TOOL_KEY: Record<Plane, 'x' | 'y' | 'z'> = { 17: 'z', 18: 'y', 19: 'x' }
+const TOOL_LETTER: Record<Plane, AxisLetter> = { 17: 'Z', 18: 'Y', 19: 'X' }
 
 /** In-plane (u, v) and helix (w) components for each working plane, right-handed. */
 const PLANE_AXES: Record<Plane, [keyof Pos6, keyof Pos6, keyof Pos6]> = {

@@ -190,8 +190,7 @@ describe('Interpreter — other modal behaviour', () => {
   })
 
   it('flags unsupported features with the phase that adds them', () => {
-    const d = interpret('MCALL CYCLE83(50,9,41,300,,5)\nX10\nMCALL\nTRACYL(40)\nIF R1>5 GOTOF L1').diagnostics
-    expect(d.some(x => /CYCLE83.*1d/.test(x.message))).toBe(true)
+    const d = interpret('TRACYL(40)\nIF R1>5 GOTOF L1').diagnostics
     expect(d.some(x => /TRACYL.*Mill-Turn/.test(x.message))).toBe(true)
     expect(d.some(x => /IF.*1e/.test(x.message))).toBe(true)
   })

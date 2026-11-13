@@ -51,7 +51,8 @@ export function CameraController({ chain }: { chain: KinematicChain | null }) {
       radius = Math.max(60, Math.hypot(max[0] - min[0], max[1] - min[1], max[2] - min[2]) / 2)
     }
     const target = cncToThree(category, center)
-    const dist = (radius / Math.sin((camera.fov * Math.PI) / 360)) * 1.15
+    // Extra margin: the spindle housing (~100 mm above the tip) sits between camera and part
+    const dist = (radius / Math.sin((camera.fov * Math.PI) / 360)) * 1.15 + 250
 
     let dir: THREE.Vector3
     if (request.view === 'fit') dir = camera.position.clone().sub(controls.target).normalize()

@@ -1,8 +1,9 @@
 /**
  * Smoke test over real programs on disk (not in the repo).
  * Run:  CNC_GCODE_CORPUS="C:\CLAUDE-MCP\sinumeric-4x;C:\CLAUDE-MCP\Experiment\G-codes" npm test
- * Every program must interpret without throwing, produce motion, and have no errors;
- * warnings are summarised (they list what later phases still have to simulate).
+ * Every program must interpret without throwing, produce motion, and have no *reading*
+ * errors (lexer/expression). Errors the interpreter finds IN the program (e.g. a cycle
+ * with swapped parameters from an old postprocessor) are listed in the summary.
  */
 import { describe, it, expect, afterAll } from 'vitest'
 import { readdirSync, readFileSync, statSync } from 'node:fs'
@@ -29,6 +30,7 @@ function decode(buf: Buffer): string {
 
 const files = DIRS.flatMap(find)
 const summary: string[] = []
+const programErrors: string[] = []
 const warningKinds = new Map<string, number>()
 
 describe.skipIf(files.length === 0)(`G-code corpus (${files.length} files)`, () => {
@@ -42,12 +44,16 @@ describe.skipIf(files.length === 0)(`G-code corpus (${files.length} files)`, () 
     }
     const mins = (r.duration / 60).toFixed(1)
     summary.push(`${String(_name).padEnd(34)} ${r.dialect.padEnd(9)} ${String(r.moves.length).padStart(6)} moves ${String(r.points.length).padStart(8)} samples ${mins.padStart(7)} min  ${errs.length} err ${warns.length} warn`)
+    for (const e of errs) programErrors.push(`${_name} L${e.line}: ${e.message.slice(0, 110)}`)
+    const readErrors = errs.filter(e => /^(Cannot read|Cannot evaluate|Unknown variable|Unknown function|Missing|Unexpected|Argument \d+:)/.test(e.message))
     expect(r.moves.length).toBeGreaterThan(0)
-    expect(errs, errs.map(e => `line ${e.line}: ${e.message}`).join('\n')).toEqual([])
+    expect(readErrors, readErrors.map(e => `line ${e.line}: ${e.message}`).join('\n')).toEqual([])
   })
 
   afterAll(() => {
-    console.log(['G-code corpus summary', ...summary, 'Warning kinds:',
+    console.log(['G-code corpus summary', ...summary,
+      `Errors found in programs (${programErrors.length}):`, ...programErrors.slice(0, 20).map(e => '  ' + e),
+      'Warning kinds:',
       ...[...warningKinds].sort((a, b) => b[1] - a[1]).map(([k, n]) => `  ${n}× ${k}`)].join('\n'))
   })
 })
