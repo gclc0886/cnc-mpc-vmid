@@ -137,7 +137,7 @@ endp
 | tool on +Z (`zpos > 0` at clearance) | `ypos` | `zpos` | `angle` | as is |
 | tool on −Z (`zpos < 0` at clearance) | `-ypos` | `-zpos` | `angle - 180` | swapped (Y mirrored) |
 
-A = angle of the part point brought under the tool (`(yhpos,zhpos) = R·(sin φ, cos φ)`), table turning right-hand about +X. This is the same convention as SolidCAM's own machine angle `apos` in wrapping (dump: `apos=202.051` ↔ `hpos=(-13.139,-32.437)`), so indexing and wrapping agree. Both rows checked numerically on dumps (hex, rotor, cylinder part). Not yet checked on the real machine (MDI `G0 A90`).
+A = angle of the part point brought under the tool (`(yhpos,zhpos) = R·(sin φ, cos φ)`), table turning right-hand about +X. This is the same convention as `apos` in wrapping (dump: `apos=202.051` ↔ `hpos=(-13.139,-32.437)`), so indexing and wrapping agree with each other. Both rows checked numerically on dumps (hex, rotor, cylinder part). **The sign itself is still unverified on the real machine** — see "A direction is decided by the post" below.
 
 **A range (non-modulo axis, DMC635):** indexing outputs the absolute face angle normalized to 0…360, no accumulation (so the table may run back almost a full turn, e.g. `A348 → A0`); wrapping accumulates via `dapos` up to the 3600 limit. The axis counter lives in the control: a post can't "reset" it without motion except with `PRESETON` (rejected by the user).
 
@@ -202,6 +202,32 @@ Results: rotor (−Z side) `G0 A12` → `G0 X-6 Z90` → `G1 Z48.493` → `G1 X2
   endif
 ```
 Verified on a rotor job where T2 starts at the same Y0 that T1 ended on: `G0 X10 Y0` is now output.
+
+#### A direction is decided by the post, not by the VMID (DMC635, Nov 2026)
+
+- **Every angle SolidCAM passes is geometric.** Test: A axis vector flipped in a VMID copy (`VecX` 1 → −1), same job regenerated with a dump: `apos`, `rotate_angle_x` and all `hpos` identical; only the *form* of `first_axis_angle` changed (0, 300, 240 … → 0, −60, −120 …, same angles mod 360). So `apos` is the wrap angle, not a "machine solution", and the VMID vector only affects SolidCAM's own machine simulation. Don't try to fix G-code direction in the VMID.
+- **Rotation transform dialog vs A.** Position "+60" in the operation's Rotation list = feature rotated +60° right-hand about X on the part → `rotate_angle_x = −60`, `first_axis_angle = 300` → with the current sign the post outputs A300. If the real table turns the other way the post must output A60 (flip the sign for indexing and wrapping together; wrapping then decreases, and this machine accepts no negative angles and the user rejected PRESETON, so the start angle has to be raised).
+- **Deciding test (machine only):** MDI `G0 A0`, mark the top of the chuck, `G0 A90`. Mark moved toward Y− → current sign right; toward Y+ → flip.
+- **Face order comes from the CAM job** (order/sign of the angles in the Rotation list, or operation order), the post only normalizes to 0…360. With faces walked in the negative direction there is one long move per pass (`A0 → A300`, or `A0 → A348` before the first cut). Removing it = change the list direction in SolidCAM, not the post.
+- **Changing the sign of the dialog angles is not a fix for direction**: on a symmetric part it only reorders faces; on an asymmetric part the operation lands on the mirrored face.
+- **Wrapping after an indexed op:** the first `dapos` is relative to SolidCAM's previous `apos` (stale during indexed ops), not to where the table is. Start the job from absolute `apos` (equivalent nearest to the current angle), then accumulate `dapos`.
+
+#### M50 — 4th axis brake release (DMC635)
+
+Own block before a block that moves A. No clamp code is output (the machine clamps by itself — user decision).
+- **Indexing:** after the Z retract, before every rotation: `G0 Z120` / `M50` / `G0 A300`.
+- **Wrapping:** once, before the first block with A of the job. Blocks without A inside the job (Z approach) do **not** count as "axis was idle" — no repeat. Repeated after a real idle: new job, tool change, indexed rotation. A second wrapping job in a row also gets its own M50 (accepted as harmless).
+```gppl
+@a_brake                       ; call after the angle is computed, before {nb} of the move
+  if change(global_a_pos) then
+    if !a_free then
+      {nb, 'M50'}
+      a_free = true
+    endif
+  endif
+endp
+; a_free = false in @start_of_job, @change_tool and after an indexed rotation
+```
 
 #### Drilling in indexing (Sinumerik MCALL cycles)
 
@@ -435,7 +461,7 @@ Remove after diagnosis. Don't guess variable semantics from names — dump them.
 
 ### Verify rotary direction against VMID kinematics
 
-Ground truth is the dump, not a simulator: in a wrapping op `apos` is SolidCAM's machine angle and `(yhpos,zhpos)` gives the part angle φ of the same point — their relation is the A convention (here A = φ). Indexing must use the same sign. A third-party kinematic model can be wrong: CNC-Trainer's `Matrix4x4.inverse()` returned a non-inverted rotation and showed the table turning the mirrored way, which produced wrong formulas that symmetric test parts did not expose. Cross-check two sources and the real machine.
+The dump shows consistency, not truth: in a wrapping op `apos` equals the part angle φ of the point given by `(yhpos,zhpos)`, so indexing must use the same sign (A = φ) to agree with wrapping. But `apos` is geometric too (it did not change when the VMID axis vector was flipped), so the absolute direction can only be confirmed on the machine. A third-party kinematic model can be wrong: CNC-Trainer's `Matrix4x4.inverse()` returned a non-inverted rotation and showed the table turning the mirrored way, which produced wrong formulas that symmetric test parts did not expose. Cross-check two sources and the real machine.
 
 ### Compare Input vs Output
 
@@ -460,6 +486,9 @@ Ground truth is the dump, not a simulator: in a wrapping op `apos` is SolidCAM's
 - [ ] `change(var) = true` set before a later assignment of the same value (flag lost)
 - [ ] Indexed A accumulating across tools (A372, A720…) instead of absolute 0…360
 - [ ] Indexing and wrapping using opposite A sign conventions (compare `apos` vs `hpos` angle in a dump; test a part with both op types)
+- [ ] A direction "fixed" in the VMID or by flipping angle signs in the CAM Rotation list instead of in the post / on the machine
+- [ ] A sign never confirmed on the machine (MDI A0 → A90 mark test)
+- [ ] Brake release (M50) missing before A, or repeated inside one continuous wrapping job
 - [ ] First wrapping move after an indexed op: `dapos` is relative to SolidCAM's previous `apos`, start from absolute `apos` instead
 - [ ] No safe Z retract before A rotation
 - [ ] Outputting A in every block (should be only on face change)
